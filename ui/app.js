@@ -717,7 +717,7 @@ function layerRow(L, idx) {
     (L.visible ? '' : ' hidden-layer');
   row.dataset.name = L.name;
   row.dataset.idx = String(idx);
-  row.draggable = true;
+  row.draggable = false;   // ⠿ を持ったときだけ true にする（下の initRowDnd）
 
   const thumb = ts && ts.thumb;
   row.innerHTML = `
@@ -761,9 +761,10 @@ function layerRow(L, idx) {
   });
 
   const move = (d) => {
-    const j = idx + d;
-    if (j < 0 || j >= state.layers.length) return;
-    [state.layers[idx], state.layers[j]] = [state.layers[j], state.layers[idx]];
+    const i = state.layers.indexOf(L);
+    const j = i + d;
+    if (i < 0 || j < 0 || j >= state.layers.length) return;
+    [state.layers[i], state.layers[j]] = [state.layers[j], state.layers[i]];
     renderLayers(); upd();
   };
   row.querySelector('.up').addEventListener('click', () => move(1));   // 画面上＝配列の後ろ
@@ -772,7 +773,8 @@ function layerRow(L, idx) {
   const gear = row.querySelector('.gear');
   if (L.missing) {
     gear.addEventListener('click', () => {
-      state.layers.splice(idx, 1);
+      const i = state.layers.indexOf(L);
+      if (i >= 0) state.layers.splice(i, 1);
       dropTileset(L.name);
       renderLayers(); upd();
     });
@@ -805,12 +807,23 @@ function layerRow(L, idx) {
 }
 
 function initRowDnd(row) {
+  // つまみを押している間だけ行をドラッグ可能にする。常に可能にしておくと
+  // 中のスライダーをつかんだときに行のドラッグが始まり、値を変えられなくなる。
+  const grip = row.querySelector('.grip');
+  const release = () => { row.draggable = false; };
+  grip.addEventListener('pointerdown', () => {
+    row.draggable = true;
+    // 掴んだまま外で離された場合にも必ず戻す
+    window.addEventListener('pointerup', release, { once: true });
+  });
+
   row.addEventListener('dragstart', (e) => {
-    e.dataTransfer.setData('text/plain', row.dataset.idx);
+    e.dataTransfer.setData('text/plain', row.dataset.name);
     e.dataTransfer.effectAllowed = 'move';
     row.classList.add('dragging');
   });
   row.addEventListener('dragend', () => {
+    row.draggable = false;
     row.classList.remove('dragging');
     document.querySelectorAll('.row').forEach((r) => r.classList.remove('dropbefore', 'dropafter'));
   });
@@ -824,9 +837,9 @@ function initRowDnd(row) {
   row.addEventListener('dragleave', () => row.classList.remove('dropbefore', 'dropafter'));
   row.addEventListener('drop', (e) => {
     e.preventDefault();
-    const from = parseInt(e.dataTransfer.getData('text/plain'), 10);
-    const to = parseInt(row.dataset.idx, 10);
-    if (!Number.isFinite(from) || from === to) return;
+    const from = state.layers.findIndex((l) => l.name === e.dataTransfer.getData('text/plain'));
+    const to = state.layers.findIndex((l) => l.name === row.dataset.name);
+    if (from < 0 || to < 0 || from === to) return;
     // パネルは配列の逆順（上＝最前面）なので、
     // 「行の上半分に落とす」＝配列では to より 1 つ上（大きい index）に置く。
     const r = row.getBoundingClientRect();
