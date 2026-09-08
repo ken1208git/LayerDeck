@@ -160,8 +160,18 @@ code{background:var(--bg3); padding:1px 4px; border-radius:3px; font-size:11px}
 .row-adv label{display:flex; align-items:center; gap:4px; font-size:11px; color:var(--fg2)}
 .row-adv input[type=number]{width:62px}
 
-.caution{
-  border:1px solid #6b4a1f; background:#2a2114; border-radius:6px;
-  padding:8px 10px; margin:6px 0 8px; font-size:11px; line-height:1.7; color:#e5cfa4;
+/* 書き出しの注意書き。普段は小さなバッジで、触れたときだけ全文を出す */
+.export-group{display:flex; align-items:center; gap:8px; position:relative}
+.note-badge{
+  font-size:11px; color:var(--warn); white-space:nowrap; cursor:help;
+  border-bottom:1px dotted var(--warn); outline:none;
 }
-.caution b{color:var(--warn)}
+.note-pop{
+  display:none; position:absolute; right:0; top:calc(100% + 8px); z-index:30;
+  width:340px; padding:9px 11px; white-space:normal; text-align:left;
+  background:#2a2114; border:1px solid #6b4a1f; border-radius:6px;
+  color:#e5cfa4; font-size:11px; line-height:1.75;
+  box-shadow:0 8px 24px rgba(0,0,0,.55);
+}
+.note-pop b{color:var(--warn)}
+.note-badge:hover .note-pop, .note-badge:focus .note-pop{display:block}

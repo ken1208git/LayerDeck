@@ -21,17 +21,26 @@
 
   <div class="sp"></div>
 
-  <label class="fld" title="確認用に小さく出せます。用紙の物理サイズは変わらず、解像度だけが下がります">
-    書き出し
-    <select id="selExportScale">
-      <option value="1">原寸</option>
-      <option value="0.5">1/2</option>
-      <option value="0.25">1/4</option>
-      <option value="0.125">1/8</option>
-    </select>
-  </label>
-  <div id="exportHint" class="hint"></div>
-  <button id="btnExport" class="btn" title="確認用の画像を書き出します。納品には使わないでください">確認用に書き出し</button>
+  <div class="export-group">
+    <label class="fld" title="用紙の物理サイズは変わらず、解像度だけが下がります">
+      書き出し
+      <select id="selExportScale">
+        <option value="1">原寸</option>
+        <option value="0.5">1/2</option>
+        <option value="0.25">1/4</option>
+        <option value="0.125">1/8</option>
+      </select>
+    </label>
+    <div id="exportHint" class="hint"></div>
+    <button id="btnExport" class="btn">確認用に書き出し</button>
+    <span class="note-badge" tabindex="0">※納品不可
+      <span class="note-pop">
+        <b>書き出しは確認用です。</b>そのまま納品しないでください。<br>
+        最終的な統合と納品は、描いたソフト側（ibisPaint など）で行ってください。
+        色の扱いが描画時と揃い、印刷所の指定にも対応しやすいためです。
+      </span>
+    </span>
+  </div>
   <div id="status" class="status"></div>
 </header>
 
@@ -75,11 +84,6 @@
     <div id="layers" class="layers"></div>
 
     <div class="side-foot">
-      <div class="caution">
-        <b>書き出しは確認用です。</b>そのまま納品しないでください。<br>
-        最終的な統合と納品は、描いたソフト側（ibisPaint など）で行ってください。
-        色の扱いが描画時と揃い、印刷所の指定にも対応しやすいためです。
-      </div>
       <details>
         <summary>用紙とガイド</summary>
         <div class="grid2">
