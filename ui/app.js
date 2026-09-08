@@ -76,6 +76,12 @@ function setStatus(msg, kind = '') {
   const el = $('#status');
   el.textContent = msg || '';
   el.className = 'status ' + kind;
+  // 書き出しの進行中だけ、ダイアログ側にも映す（監視中などの常時表示は映さない）
+  const m = $('#exportStatus');
+  if (m && busy && !$('#exportModal').hidden) {
+    m.textContent = msg || '';
+    m.className = 'status ' + kind;
+  }
 }
 
 const fmtBytes = (n) => n >= (1 << 30) ? (n / (1 << 30)).toFixed(2) + ' GB'
@@ -263,14 +269,6 @@ async function refreshMem() {
     if (mem) budget = clamp(Math.round(mem.avail * 0.25), 96 * MB, 1536 * MB);
   } catch { /* 取れなければ前回値のまま */ }
   updateMemHint();
-}
-
-function updateExportHint(dw, dh) {
-  const el = $('#exportHint');
-  if (!el) return;
-  if (!dw) { el.textContent = ''; return; }
-  const s = clamp(state.exportScale || 1, 0.01, 1);
-  el.textContent = `→ ${Math.round(dw * s)}×${Math.round(dh * s)}px / ${Math.round(state.dpi * s)}dpi`;
 }
 
 function updateMemHint() {
@@ -553,7 +551,6 @@ function updateHud(dw, dh) {
     $('#hudMm').textContent = '';
     $('#paperNote').textContent = 'PNGを読み込むとここに寸法が出ます。';
   }
-  updateExportHint(dw, dh);
 }
 
 /* ------------------------------------------------------------------ */
@@ -617,6 +614,10 @@ function initViewEvents() {
   viewCv.addEventListener('contextmenu', (e) => e.preventDefault());
 
   window.addEventListener('keydown', (e) => {
+    if (!$('#exportModal').hidden) {
+      if (e.key === 'Escape') closeExportDialog();
+      return;                              // ダイアログ表示中はショートカットを止める
+    }
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
     if (e.code === 'Space') { e.preventDefault(); return; }
@@ -858,7 +859,6 @@ function applyProject(p) {
 function syncUiFromState() {
   $('#inDpi').value = state.dpi;
   $('#inBleed').value = state.bleed;
-  $('#selExportScale').value = String(state.exportScale);
   $('#btnFlip').classList.toggle('on', state.view.flipH);
   $('#btnGray').classList.toggle('on', state.view.gray);
   $('#btnGuide').classList.toggle('on', state.view.guide);
@@ -929,11 +929,11 @@ async function stampPngMetadata(blob, dpi) {
   }
 }
 async function exportComposite() {
-  if (busy) return;
+  if (busy) return false;
   const { w: dw, h: dh } = docSize();
-  if (!dw) { setStatus('レイヤーがありません', 'err'); return; }
+  if (!dw) { setStatus('レイヤーがありません', 'err'); return false; }
   const targets = state.layers.filter((L) => L.visible && !L.missing && tilesets.has(L.name));
-  if (!targets.length) { setStatus('表示中のレイヤーがありません', 'err'); return; }
+  if (!targets.length) { setStatus('表示中のレイヤーがありません', 'err'); return false; }
 
   busy = true;
   $('#btnExport').disabled = true;
@@ -990,12 +990,69 @@ async function exportComposite() {
     const name = `check_${stamp}_${outW}x${outH}.png`;
     setStatus('保存中… ' + fmtBytes(blob.size), 'busy');
     await Backend.saveExport(name, blob);
-    setStatus(`書き出し完了: _export/${name} (${fmtBytes(blob.size)} / ${Math.round(outDpi)}dpi)`, 'ok');
+    setStatus(`書き出しました: _export/${name}（${fmtBytes(blob.size)} / ${Math.round(outDpi)}dpi）`, 'ok');
+    return true;
   } catch (e) {
     setStatus('書き出し失敗: ' + (e.message || e), 'err');
+    return false;
   } finally {
     busy = false;
     $('#btnExport').disabled = false;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 書き出しダイアログ                                                    */
+/* ------------------------------------------------------------------ */
+const EXPORT_SCALES = [[1, '原寸'], [0.5, '1/2'], [0.25, '1/4'], [0.125, '1/8']];
+
+function openExportDialog() {
+  const { w: dw, h: dh } = docSize();
+  if (!dw) { setStatus('レイヤーがありません', 'err'); return; }
+
+  const list = $('#scaleList');
+  list.innerHTML = EXPORT_SCALES.map(([sc, label]) => `
+    <label class="scale-row${sc === state.exportScale ? ' on' : ''}">
+      <input type="radio" name="expscale" value="${sc}"${sc === state.exportScale ? ' checked' : ''}>
+      <span class="scale-name">${label}</span>
+      <span class="scale-size">${Math.round(dw * sc)} × ${Math.round(dh * sc)} px 　 ${Math.round(state.dpi * sc)} dpi</span>
+    </label>`).join('');
+  list.querySelectorAll('input').forEach((r) => r.addEventListener('change', () => {
+    state.exportScale = parseFloat(r.value) || 1;
+    list.querySelectorAll('.scale-row').forEach((row) =>
+      row.classList.toggle('on', row.querySelector('input').checked));
+    scheduleSave();
+  }));
+
+  const mm = (n) => (n / state.dpi * 25.4).toFixed(0);
+  $('#exportPaper').textContent =
+    `どの倍率でも用紙サイズは ${mm(dw)} × ${mm(dh)} mm のままです（解像度だけが変わります）。`;
+
+  const st = $('#exportStatus');
+  st.textContent = ''; st.className = 'status';
+  $('#btnExportGo').disabled = false;
+  $('#btnExportGo').hidden = false;
+  $('#btnExportClose').disabled = false;
+  $('#btnExportClose').textContent = 'キャンセル';
+  $('#exportModal').hidden = false;
+  $('#btnExportGo').focus();
+}
+
+function closeExportDialog() {
+  if (busy) return;                       // 書き出し中は閉じさせない
+  $('#exportModal').hidden = true;
+}
+
+async function runExport() {
+  $('#btnExportGo').disabled = true;
+  $('#btnExportClose').disabled = true;
+  const ok = await exportComposite();
+  $('#btnExportClose').disabled = false;
+  if (ok) {
+    $('#btnExportGo').hidden = true;      // 済んだので押せないようにする
+    $('#btnExportClose').textContent = '閉じる';
+  } else {
+    $('#btnExportGo').disabled = false;
   }
 }
 
@@ -1041,12 +1098,11 @@ function initUi() {
   $('#btnBg').addEventListener('click', () => {
     state.view.bg = (state.view.bg + 1) % BG_MODES.length; requestRender(); scheduleSave();
   });
-  $('#btnExport').addEventListener('click', exportComposite);
-  $('#selExportScale').addEventListener('change', (e) => {
-    state.exportScale = parseFloat(e.target.value) || 1;
-    const { w, h } = docSize();
-    updateExportHint(w, h);
-    scheduleSave();
+  $('#btnExport').addEventListener('click', openExportDialog);
+  $('#btnExportGo').addEventListener('click', runExport);
+  $('#btnExportClose').addEventListener('click', closeExportDialog);
+  $('#exportModal').addEventListener('click', (e) => {
+    if (e.target === $('#exportModal')) closeExportDialog();   // 背景クリックで閉じる
   });
 
   $('#btnSortName').addEventListener('click', () => {

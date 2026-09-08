@@ -21,26 +21,7 @@
 
   <div class="sp"></div>
 
-  <div class="export-group">
-    <label class="fld" title="用紙の物理サイズは変わらず、解像度だけが下がります">
-      書き出し
-      <select id="selExportScale">
-        <option value="1">原寸</option>
-        <option value="0.5">1/2</option>
-        <option value="0.25">1/4</option>
-        <option value="0.125">1/8</option>
-      </select>
-    </label>
-    <div id="exportHint" class="hint"></div>
-    <button id="btnExport" class="btn">確認用に書き出し</button>
-    <span class="note-badge" tabindex="0">※納品不可
-      <span class="note-pop">
-        <b>書き出しは確認用です。</b>そのまま納品しないでください。<br>
-        最終的な統合と納品は、描いたソフト側（ibisPaint など）で行ってください。
-        色の扱いが描画時と揃い、印刷所の指定にも対応しやすいためです。
-      </span>
-    </span>
-  </div>
+  <button id="btnExport" class="btn">書き出し…</button>
   <div id="status" class="status"></div>
 </header>
 
@@ -117,6 +98,26 @@
     </div>
   </aside>
 </main>
+
+<div id="exportModal" class="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="exportTitle">
+    <div class="modal-head" id="exportTitle">書き出し</div>
+    <div class="modal-body">
+      <div class="caution">
+        <b>これは確認用です。そのまま納品しないでください。</b><br>
+        最終的な統合と納品は、描いたソフト側（ibisPaint など）で行ってください。
+        色の扱いが描画時と揃い、印刷所の指定にも対応しやすいためです。
+      </div>
+      <div class="scale-list" id="scaleList"></div>
+      <div class="note" id="exportPaper"></div>
+    </div>
+    <div class="modal-foot">
+      <div id="exportStatus" class="status"></div>
+      <button class="btn" id="btnExportClose">キャンセル</button>
+      <button class="btn primary" id="btnExportGo">書き出す</button>
+    </div>
+  </div>
+</div>
 
 <script src="backend.js"></script>
 <script src="app.js"></script>
