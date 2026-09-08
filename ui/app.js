@@ -931,6 +931,17 @@ async function exportComposite() {
     const g = c.getContext('2d');
     if (!g) throw new Error('キャンバスを作れませんでした（サイズが大きすぎる可能性）');
 
+    // 大きすぎるキャンバスをブラウザは例外なしで無効化する。描いても反映されず、
+    // そのままだと真っ白なPNGが書き出されてしまうので、1px 描いて読み返して確かめる。
+    // 実測の上限はおよそ 2億7千万画素（A0/350dpi は通り、A1/600dpi は通らない）。
+    g.fillStyle = '#fff';
+    g.fillRect(dw - 1, dh - 1, 1, 1);
+    if (g.getImageData(dw - 1, dh - 1, 1, 1).data[3] !== 255) {
+      throw new Error(
+        `${dw}×${dh}（${Math.round(dw * dh / 1e6)}メガ画素）はブラウザで扱える上限を超えています`);
+    }
+    g.clearRect(dw - 1, dh - 1, 1, 1);
+
     let i = 0;
     for (const L of targets) {
       const ts = tilesets.get(L.name);
