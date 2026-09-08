@@ -40,6 +40,7 @@ const state = {
   layers: [],            // index 0 = 最下層
   dpi: 350,
   bleed: 3,
+  exportScale: 1,        // 書き出しの倍率。用紙の物理サイズは変えず解像度だけ下げる
   view: { zoom: 1, panX: 0, panY: 0, flipH: false, gray: false, bg: 0, guide: false, fitted: false },
 };
 
@@ -262,6 +263,14 @@ async function refreshMem() {
     if (mem) budget = clamp(Math.round(mem.avail * 0.25), 96 * MB, 1536 * MB);
   } catch { /* 取れなければ前回値のまま */ }
   updateMemHint();
+}
+
+function updateExportHint(dw, dh) {
+  const el = $('#exportHint');
+  if (!el) return;
+  if (!dw) { el.textContent = ''; return; }
+  const s = clamp(state.exportScale || 1, 0.01, 1);
+  el.textContent = `→ ${Math.round(dw * s)}×${Math.round(dh * s)}px / ${Math.round(state.dpi * s)}dpi`;
 }
 
 function updateMemHint() {
@@ -544,6 +553,7 @@ function updateHud(dw, dh) {
     $('#hudMm').textContent = '';
     $('#paperNote').textContent = 'PNGを読み込むとここに寸法が出ます。';
   }
+  updateExportHint(dw, dh);
 }
 
 /* ------------------------------------------------------------------ */
@@ -810,6 +820,7 @@ async function saveProject() {
     version: 2,
     dpi: state.dpi,
     bleed: state.bleed,
+    exportScale: state.exportScale,
     view: { flipH: state.view.flipH, gray: state.view.gray, bg: state.view.bg, guide: state.view.guide },
     layers: state.layers.map((L) => ({
       name: L.name, visible: L.visible, opacity: L.opacity, blend: L.blend,
@@ -825,6 +836,7 @@ function applyProject(p) {
   if (!p) return;
   if (Number.isFinite(p.dpi)) state.dpi = p.dpi;
   if (Number.isFinite(p.bleed)) state.bleed = p.bleed;
+  if (Number.isFinite(p.exportScale) && p.exportScale > 0) state.exportScale = p.exportScale;
   if (p.view) Object.assign(state.view, {
     flipH: !!p.view.flipH, gray: !!p.view.gray,
     bg: p.view.bg | 0, guide: !!p.view.guide,
@@ -846,6 +858,7 @@ function applyProject(p) {
 function syncUiFromState() {
   $('#inDpi').value = state.dpi;
   $('#inBleed').value = state.bleed;
+  $('#selExportScale').value = String(state.exportScale);
   $('#btnFlip').classList.toggle('on', state.view.flipH);
   $('#btnGray').classList.toggle('on', state.view.gray);
   $('#btnGuide').classList.toggle('on', state.view.guide);
@@ -925,9 +938,13 @@ async function exportComposite() {
   busy = true;
   $('#btnExport').disabled = true;
   try {
-    setStatus(`原寸で合成中… 0/${targets.length}`, 'busy');
+    const s = clamp(state.exportScale || 1, 0.01, 1);
+    const outW = Math.max(1, Math.round(dw * s));
+    const outH = Math.max(1, Math.round(dh * s));
+    const outDpi = state.dpi * s;
+    setStatus(`合成中… 0/${targets.length}`, 'busy');
     const c = document.createElement('canvas');
-    c.width = dw; c.height = dh;
+    c.width = outW; c.height = outH;
     const g = c.getContext('2d');
     if (!g) throw new Error('キャンバスを作れませんでした（サイズが大きすぎる可能性）');
 
@@ -935,12 +952,16 @@ async function exportComposite() {
     // そのままだと真っ白なPNGが書き出されてしまうので、1px 描いて読み返して確かめる。
     // 実測の上限はおよそ 2億7千万画素（A0/350dpi は通り、A1/600dpi は通らない）。
     g.fillStyle = '#fff';
-    g.fillRect(dw - 1, dh - 1, 1, 1);
-    if (g.getImageData(dw - 1, dh - 1, 1, 1).data[3] !== 255) {
+    g.fillRect(outW - 1, outH - 1, 1, 1);
+    if (g.getImageData(outW - 1, outH - 1, 1, 1).data[3] !== 255) {
       throw new Error(
-        `${dw}×${dh}（${Math.round(dw * dh / 1e6)}メガ画素）はブラウザで扱える上限を超えています`);
+        `${outW}×${outH}（${Math.round(outW * outH / 1e6)}メガ画素）はブラウザで扱える上限を超えています。`
+        + '書き出しの倍率を下げてください');
     }
-    g.clearRect(dw - 1, dh - 1, 1, 1);
+    g.clearRect(outW - 1, outH - 1, 1, 1);
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = 'high';
+    g.setTransform(s, 0, 0, s, 0, 0);   // 以降はドキュメント座標のまま描ける
 
     let i = 0;
     for (const L of targets) {
@@ -956,20 +977,20 @@ async function exportComposite() {
       g.drawImage(full, 0, 0, full.width, full.height, 0, 0, w, h);
       g.restore();
       full.close();
-      setStatus(`原寸で合成中… ${++i}/${targets.length}`, 'busy');
+      setStatus(`合成中… ${++i}/${targets.length}`, 'busy');
     }
 
     setStatus('PNGに変換中…（大きいので少し待ちます）', 'busy');
     const raw = await new Promise((res, rej) =>
       c.toBlob((b) => (b ? res(b) : rej(new Error('PNG変換に失敗しました'))), 'image/png'));
-    const blob = await stampPngMetadata(raw, state.dpi);
+    const blob = await stampPngMetadata(raw, outDpi);
 
     const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')
       .replace(/(\d{8})(\d{6})/, '$1_$2');
-    const name = `composite_${stamp}.png`;
+    const name = `check_${stamp}_${outW}x${outH}.png`;
     setStatus('保存中… ' + fmtBytes(blob.size), 'busy');
     await Backend.saveExport(name, blob);
-    setStatus(`書き出し完了: _export/${name} (${fmtBytes(blob.size)} / ${state.dpi}dpi)`, 'ok');
+    setStatus(`書き出し完了: _export/${name} (${fmtBytes(blob.size)} / ${Math.round(outDpi)}dpi)`, 'ok');
   } catch (e) {
     setStatus('書き出し失敗: ' + (e.message || e), 'err');
   } finally {
@@ -1021,6 +1042,12 @@ function initUi() {
     state.view.bg = (state.view.bg + 1) % BG_MODES.length; requestRender(); scheduleSave();
   });
   $('#btnExport').addEventListener('click', exportComposite);
+  $('#selExportScale').addEventListener('change', (e) => {
+    state.exportScale = parseFloat(e.target.value) || 1;
+    const { w, h } = docSize();
+    updateExportHint(w, h);
+    scheduleSave();
+  });
 
   $('#btnSortName').addEventListener('click', () => {
     state.layers.sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true }));
