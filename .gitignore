@@ -1,0 +1,14 @@
+# プレビュー対象の画像やテスト素材はリポジトリに入れない
+*.png
+*.psd
+*.clip
+_testparts/
+_export/
+
+# 監視フォルダごとに作られる設定ファイル
+layerdeck.project.json
+
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

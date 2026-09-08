@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LayerDeck</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header id="bar">
+  <div class="brand">LayerDeck</div>
+
+  <button id="btnPick" class="btn primary">フォルダを選ぶ</button>
+  <div id="dirLabel" class="dir" title="監視中のフォルダ">未選択</div>
+  <button id="btnReveal" class="btn icon" title="エクスプローラーで開く">📂</button>
+
+  <div class="sp"></div>
+
+  <div id="memHint" class="hint" title="画面に出すために展開しているマス目の量と、空きメモリから自動で決まる上限"></div>
+
+  <div class="sp"></div>
+
+  <button id="btnExport" class="btn">合成PNGを書き出し</button>
+  <div id="status" class="status"></div>
+</header>
+
+<main>
+  <section id="stage">
+    <canvas id="view"></canvas>
+
+    <div id="empty" class="empty">
+      <div class="empty-inner">
+        <div class="empty-title">パーツPNGの入ったフォルダを選んでください</div>
+        <p>そのフォルダに透過PNGを書き出すと、<b>自動で重なって</b>ここに出ます。<br>
+        ibisPaint から書き出すたびに、開いたままで勝手に更新されます。</p>
+        <button id="btnPick2" class="btn primary big">フォルダを選ぶ</button>
+      </div>
+    </div>
+
+    <div id="hud" class="hud">
+      <span id="hudZoom">100%</span>
+      <span id="hudSize"></span>
+      <span id="hudMm"></span>
+    </div>
+
+    <div id="viewbar" class="viewbar">
+      <button class="btn icon" id="btnFit" title="全体表示 (F)">⤢</button>
+      <button class="btn icon" id="btnOne" title="等倍 (1)">1:1</button>
+      <button class="btn icon toggle" id="btnFlip" title="左右反転チェック (H)">⇄</button>
+      <button class="btn icon toggle" id="btnGray" title="グレースケール＝明度チェック (G)">◐</button>
+      <button class="btn icon toggle" id="btnGuide" title="断ち切り・塗り足しガイド">⊞</button>
+      <button class="btn icon" id="btnBg" title="背景を切り替え (B)">▩</button>
+    </div>
+  </section>
+
+  <aside id="side">
+    <div class="side-head">
+      <span>レイヤー <small id="layerCount"></small></span>
+      <div class="side-head-btns">
+        <button class="btn tiny" id="btnSortName" title="ファイル名の昇順に並べ替え（数字プレフィックス推奨）">名前順</button>
+        <button class="btn tiny" id="btnAllOn" title="すべて表示">全表示</button>
+      </div>
+    </div>
+    <div id="layers" class="layers"></div>
+
+    <div class="side-foot">
+      <details>
+        <summary>用紙とガイド</summary>
+        <div class="grid2">
+          <label>解像度 dpi<input type="number" id="inDpi" value="350" min="1" max="2400" step="1"></label>
+          <label>塗り足し mm<input type="number" id="inBleed" value="3" min="0" max="30" step="0.5"></label>
+        </div>
+        <div class="note" id="paperNote"></div>
+      </details>
+      <details>
+        <summary>使い方 / ショートカット</summary>
+        <ul class="keys">
+          <li><b>ホイール</b> ズーム（カーソル基準）</li>
+          <li><b>ドラッグ / Space+ドラッグ</b> 移動</li>
+          <li><b>F</b> 全体表示 / <b>1</b> 等倍</li>
+          <li><b>H</b> 左右反転 / <b>G</b> グレースケール / <b>B</b> 背景</li>
+          <li><b>目玉をAlt+クリック</b> そのレイヤーだけ表示（ソロ）</li>
+          <li>ファイル名を <code>01_背景.png</code> のように付けると<br>「名前順」で下から積めます</li>
+        </ul>
+      </details>
+      <details>
+        <summary>拡大しても軽い理由</summary>
+        <div class="note">
+          読み込んだPNGは 512px のマス目に切り分けて持っています。
+          画面に映っているマス目だけを展開するので、<b>何倍に拡大しても、
+          絵が何枚あっても、使うメモリはほぼ一定</b>です。<br><br>
+          展開したマス目の量は、パソコンの空きメモリを見ながら自動で増減します。
+          ibisPaint が重くなってきたら、こちらが自動で身を引きます。
+          ディスクには何も書きません。
+        </div>
+      </details>
+    </div>
+  </aside>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
