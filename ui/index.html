@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LayerDeck</title>
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
@@ -87,7 +87,7 @@
       <details>
         <summary>拡大しても軽い理由</summary>
         <div class="note">
-          読み込んだPNGは 512px のマス目に切り分けて持っています。
+          読み込んだPNGは 1024px のマス目に切り分けて持っています。
           画面に映っているマス目だけを展開するので、<b>何倍に拡大しても、
           絵が何枚あっても、使うメモリはほぼ一定</b>です。<br><br>
           展開したマス目の量は、パソコンの空きメモリを見ながら自動で増減します。
@@ -99,6 +99,7 @@
   </aside>
 </main>
 
-<script src="/app.js"></script>
+<script src="backend.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

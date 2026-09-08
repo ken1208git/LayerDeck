@@ -9,7 +9,11 @@
  */
 'use strict';
 
-const TILE = 512;
+// マス目の大きさ。大きいほど切り分けが速く（枚数が減る）、
+// 小さいほど画面に必要な分だけを細かく持てる。
+// A2/350dpi 6枚での実測: 512px=257枚/約60秒/展開115MB、
+//                        1024px=65枚/約20秒/展開152MB。
+const TILE = 1024;
 
 self.onmessage = async (e) => {
   const job = e.data || {};
@@ -23,14 +27,9 @@ self.onmessage = async (e) => {
   }
 };
 
-async function run({ name, ver }) {
-  const q = `name=${encodeURIComponent(name)}&v=${encodeURIComponent(ver)}`;
-
-  const res = await fetch(`/file?${q}`);
-  if (!res.ok) throw new Error('画像を読めませんでした');
-  const blob = await res.blob();
-
-  const src = await createImageBitmap(blob);
+async function run({ name, ver, buf }) {
+  // 画像のバイト列は本体側から転送されてくる（worker はバックエンドを直接触れない）
+  const src = await createImageBitmap(new Blob([buf], { type: 'image/png' }));
   const w0 = src.width, h0 = src.height;
 
   // 解像度の階段。0 が原寸で、数字が増えるほど粗い。

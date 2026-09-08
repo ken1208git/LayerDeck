@@ -1,5 +1,7 @@
 # プレビュー対象の画像やテスト素材はリポジトリに入れない
 *.png
+!src-tauri/icons/*.png
+!src-tauri/icons/**/*.png
 *.psd
 *.clip
 _testparts/
@@ -7,6 +9,11 @@ _export/
 
 # 監視フォルダごとに作られる設定ファイル
 layerdeck.project.json
+
+# ビルド成果物
+node_modules/
+src-tauri/target/
+src-tauri/gen/
 
 __pycache__/
 *.pyc

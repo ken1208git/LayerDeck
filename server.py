@@ -32,10 +32,12 @@ IMAGE_EXTS = {".png", ".webp", ".jpg", ".jpeg", ".gif", ".bmp"}
 PROJECT_NAME = "layerdeck.project.json"
 EXPORT_DIR = "_export"
 
+UI_DIR = APP_DIR / "ui"
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/backend.js": ("backend.js", "text/javascript; charset=utf-8"),
     "/tiler.js": ("tiler.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
 }
@@ -230,7 +232,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path in STATIC:
             fn, ctype = STATIC[path]
-            f = APP_DIR / fn
+            f = UI_DIR / fn
             if not f.is_file():
                 return self._err("missing " + fn, 404)
             return self._send(200, f.read_bytes(), ctype, {"Cache-Control": "no-store"})

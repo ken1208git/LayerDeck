@@ -77,18 +77,6 @@ function setStatus(msg, kind = '') {
   el.className = 'status ' + kind;
 }
 
-async function api(path, opts) {
-  const r = await fetch(path, opts);
-  const ct = r.headers.get('content-type') || '';
-  if (!ct.includes('json')) throw new Error('HTTP ' + r.status);
-  const j = await r.json();
-  if (!r.ok && j.error) throw new Error(j.error);
-  return j;
-}
-
-const fileURL = (name, ver) =>
-  `/file?name=${encodeURIComponent(name)}&v=${encodeURIComponent(ver)}`;
-
 const fmtBytes = (n) => n >= (1 << 30) ? (n / (1 << 30)).toFixed(2) + ' GB'
   : n >= MB ? (n / MB).toFixed(0) + ' MB'
   : (n / 1024).toFixed(0) + ' KB';
@@ -115,7 +103,7 @@ const jobQueue = [];
 
 function initWorkers() {
   for (let i = 0; i < WORKER_COUNT; i++) {
-    const w = new Worker('/tiler.js');
+    const w = new Worker('tiler.js');
     const slot = { w, busy: false };
     w.onmessage = (e) => onWorkerMessage(slot, e.data);
     w.onerror = () => { slot.busy = false; pumpJobs(); };
@@ -140,7 +128,19 @@ function pumpJobs() {
     if (!ts || ts.ver !== job.ver) continue;   // すでに新しい版が来ている
     slot.busy = true;
     slot.job = job;
-    slot.w.postMessage(job);
+    // worker はバックエンドを直接触れないので、本体側で読んで転送する
+    Backend.readImage(job.name, job.ver).then((buf) => {
+      const cur = tilesets.get(job.name);
+      if (!cur || cur.ver !== job.ver) { slot.busy = false; pumpJobs(); return; }
+      slot.w.postMessage({ name: job.name, ver: job.ver, buf }, [buf]);
+    }).catch((e) => {
+      setStatus(`${job.name}: ${e.message || e}`, 'err');
+      const cur = tilesets.get(job.name);
+      if (cur && cur.ver === job.ver) cur.status = 'error';   // 「切り分け中」のまま止まらせない
+      slot.busy = false;
+      renderLayers();
+      pumpJobs();
+    });
   }
   updateStatusLine();
 }
@@ -258,8 +258,7 @@ function evict() {
 
 async function refreshMem() {
   try {
-    const j = await api('/api/mem');
-    mem = j.mem || null;
+    mem = await Backend.memStatus();
     if (mem) budget = clamp(Math.round(mem.avail * 0.25), 96 * MB, 1536 * MB);
   } catch { /* 取れなければ前回値のまま */ }
   updateMemHint();
@@ -281,7 +280,7 @@ async function poll() {
   if (!state.dir) return;
   let files;
   try {
-    files = (await api('/api/files')).files;
+    files = await Backend.listFiles();
   } catch { return; }
 
   const present = new Set(files.map((f) => f.name));
@@ -658,6 +657,7 @@ function renderLayers() {
 function layerSubtitle(L, ts) {
   if (L.missing) return '⚠ ファイルが見つかりません';
   if (!ts) return '待機中…';
+  if (ts.status === 'error') return '⚠ 読み込みに失敗しました';
   if (!ts.w) return '読み込み中…';
   const pct = ts.total ? Math.round(ts.done / ts.total * 100) : 0;
   const head = ts.status === 'tiling' ? `切り分け中 ${pct}%  ` : '';
@@ -817,11 +817,7 @@ async function saveProject() {
     })),
   };
   try {
-    await api('/api/project', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
+    await Backend.saveProject(data);
   } catch { /* 保存失敗は致命的ではないので黙って無視 */ }
 }
 
@@ -878,8 +874,8 @@ async function exportComposite() {
     let i = 0;
     for (const L of targets) {
       const ts = tilesets.get(L.name);
-      const blob = await (await fetch(fileURL(L.name, ts.ver))).blob();
-      const full = await createImageBitmap(blob);
+      const buf = await Backend.readImage(L.name, ts.ver);
+      const full = await createImageBitmap(new Blob([buf], { type: 'image/png' }));
       const w = full.width * L.scale, h = full.height * L.scale;
       g.save();
       g.globalAlpha = clamp(L.opacity, 0, 1);
@@ -900,13 +896,7 @@ async function exportComposite() {
       .replace(/(\d{8})(\d{6})/, '$1_$2');
     const name = `composite_${stamp}.png`;
     setStatus('保存中… ' + fmtBytes(blob.size), 'busy');
-    const r = await fetch('/api/export', {
-      method: 'POST',
-      headers: { 'Content-Type': 'image/png', 'X-Layerdeck-Name': name },
-      body: blob,
-    });
-    const j = await r.json();
-    if (!j.ok) throw new Error(j.error || '保存に失敗しました');
+    await Backend.saveExport(name, blob);
     setStatus(`書き出し完了: _export/${name} (${fmtBytes(blob.size)})`, 'ok');
   } catch (e) {
     setStatus('書き出し失敗: ' + (e.message || e), 'err');
@@ -921,10 +911,8 @@ async function exportComposite() {
 /* ------------------------------------------------------------------ */
 async function openFolder(fromPicker) {
   try {
-    const j = fromPicker
-      ? await api('/api/pick', { method: 'POST' })
-      : await api('/api/state');
-    if (j.cancelled || !j.dir) return;
+    const j = fromPicker ? await Backend.pickFolder() : await Backend.getState();
+    if (!j || !j.dir) return;
     adoptDir(j);
   } catch (e) {
     setStatus(String(e.message || e), 'err');
@@ -950,8 +938,7 @@ function adoptDir(j) {
 function initUi() {
   $('#btnPick').addEventListener('click', () => openFolder(true));
   $('#btnPick2').addEventListener('click', () => openFolder(true));
-  $('#btnReveal').addEventListener('click', () =>
-    fetch('/api/reveal', { method: 'POST', body: '{}' }).catch(() => {}));
+  $('#btnReveal').addEventListener('click', () => Backend.reveal().catch(() => {}));
 
   $('#btnFit').addEventListener('click', () => fit());
   $('#btnOne').addEventListener('click', () => { state.view.zoom = 1; requestRender(); });
@@ -989,10 +976,12 @@ function initUi() {
   initWorkers();
   syncUiFromState();
   try {
-    const j = await api('/api/state');
-    if (j.dir) adoptDir(j);
+    const j = await Backend.getState();
+    if (j && j.dir) adoptDir(j);
   } catch {}
-  setInterval(poll, 800);
+  // OS からファイル変更が通知される環境では、間隔をあけた保険のみにする
+  Backend.onChange(() => { poll(); setTimeout(poll, 500); });
+  setInterval(poll, Backend.pushesChanges ? 2500 : 800);
   setInterval(refreshMem, 5000);
   setInterval(updateStatusLine, 500);
   setInterval(evict, 1000);   // 描画が来ないときの保険
