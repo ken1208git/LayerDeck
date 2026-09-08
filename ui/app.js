@@ -58,6 +58,10 @@ let mem = null;
 /** name -> "mtime_size" 前回のポーリングで見えた版（書き込み途中の検出用） */
 const seen = new Map();
 
+/** これを超える枚数のフォルダは、確認するまで読み込まない */
+const MAX_AUTO_LAYERS = 60;
+let allowManyLayers = false;
+
 const newLayer = (name) => ({
   name, visible: true, opacity: 1, blend: 'source-over',
   x: 0, y: 0, scale: 1, flipH: false, open: false, missing: false,
@@ -290,6 +294,8 @@ async function poll() {
     files = await Backend.listFiles();
   } catch { return; }
 
+  if (files.length > MAX_AUTO_LAYERS && !allowManyLayers) { showTooMany(files.length); return; }
+
   const present = new Set(files.map((f) => f.name));
   let dirty = false;
 
@@ -317,6 +323,20 @@ async function poll() {
   for (const k of [...seen.keys()]) if (!present.has(k)) seen.delete(k);
 
   if (dirty) { renderLayers(); requestRender(); scheduleSave(); }
+}
+
+/** 画像が多すぎるフォルダを掴んだときは、読み込みを止めて選び直させる */
+function showTooMany(n) {
+  clearTimeout(saveTimer);                 // うっかり空の設定を保存しない
+  jobQueue.length = 0;
+  for (const name of [...tilesets.keys()]) dropTileset(name);
+  state.layers = [];
+  $('#tooManyCount').textContent = n;
+  $('#tooMany').classList.remove('hide');
+  $('#empty').classList.add('hide');
+  renderLayersNow();
+  requestRender();
+  setStatus(`画像が ${n} 枚あるため読み込みを止めました`, 'err');
 }
 
 function flashRow(name) {
@@ -650,12 +670,24 @@ function toggleView(key, sel) {
 /* ------------------------------------------------------------------ */
 /* レイヤーパネル                                                        */
 /* ------------------------------------------------------------------ */
+let layersRaf = 0;
+/**
+ * レイヤー一覧の作り直し。タイル化の進行中は1枚ごとに何度も呼ばれるので、
+ * 1フレームに1回へまとめる。まとめないと「呼び出し回数 × 行数」で
+ * DOM構築が二乗に効いてきて、枚数が多いと操作不能になる。
+ */
 function renderLayers() {
+  if (layersRaf) return;
+  layersRaf = requestAnimationFrame(() => { layersRaf = 0; renderLayersNow(); });
+}
+
+function renderLayersNow() {
   const box = $('#layers');
   const openState = new Map(state.layers.map((l) => [l.name, l.open]));
   box.innerHTML = '';
   $('#layerCount').textContent = state.layers.length ? `(${state.layers.length})` : '';
-  $('#empty').classList.toggle('hide', !!state.dir);
+  const tooMany = !$('#tooMany').classList.contains('hide');
+  $('#empty').classList.toggle('hide', !!state.dir || tooMany);
 
   // 画面上が最前面なので、配列とは逆順に並べる
   for (let i = state.layers.length - 1; i >= 0; i--) {
@@ -1076,6 +1108,8 @@ function adoptDir(j) {
   for (const name of [...tilesets.keys()]) dropTileset(name);
   seen.clear();
   jobQueue.length = 0;
+  allowManyLayers = false;
+  $('#tooMany').classList.add('hide');
   state.layers = [];
   applyProject(j.project);
   if (j.mem) { mem = j.mem; budget = clamp(Math.round(mem.avail * 0.25), 96 * MB, 1536 * MB); }
@@ -1088,6 +1122,13 @@ function adoptDir(j) {
 function initUi() {
   $('#btnPick').addEventListener('click', () => openFolder(true));
   $('#btnPick2').addEventListener('click', () => openFolder(true));
+  $('#btnPick3').addEventListener('click', () => openFolder(true));
+  $('#btnLoadAnyway').addEventListener('click', () => {
+    allowManyLayers = true;
+    $('#tooMany').classList.add('hide');
+    setStatus('読み込みます…', 'busy');
+    poll();
+  });
   $('#btnReveal').addEventListener('click', () => Backend.reveal().catch(() => {}));
 
   $('#btnFit').addEventListener('click', () => fit());
