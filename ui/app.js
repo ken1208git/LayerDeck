@@ -1,6 +1,6 @@
 /* LayerDeck - 透過PNG リアルタイム重ね合わせプレビュー (client)
  *
- * 各PNGは worker が 512px のマス目（タイル）に切り分けて PNG Blob で保持する。
+ * 各PNGは worker が 1024px のマス目（タイル）に切り分けて PNG Blob で保持する。
  * 画面に映っているマス目だけを展開（ImageBitmap 化）するので、
  * 使用メモリは「絵の大きさ・枚数」ではなく「表示領域の広さ」で決まる。
  * 展開量の上限は、サーバが実測した空き物理メモリから自動で決める。
@@ -63,7 +63,7 @@ const newLayer = (name) => ({
 });
 
 const newTileset = (name, ver) => ({
-  name, ver, w: 0, h: 0, tile: 512, levels: [],
+  name, ver, w: 0, h: 0, tile: 1024, levels: [],   // 実際の値は worker の geom で上書きされる
   blobs: new Map(), blobBytes: 0,
   ready: new Set(), status: 'tiling', done: 0, total: 0, thumb: null,
 });
@@ -855,6 +855,66 @@ function syncUiFromState() {
 /* ------------------------------------------------------------------ */
 /* 書き出し（原寸合成 / 元PNGから直接読む）                                */
 /* ------------------------------------------------------------------ */
+
+/** PNG のチャンク用 CRC32 */
+let crcTable = null;
+function crc32(bytes) {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      crcTable[n] = c >>> 0;
+    }
+  }
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const out = new Uint8Array(12 + data.length);
+  const v = new DataView(out.buffer);
+  v.setUint32(0, data.length);
+  for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+  out.set(data, 8);
+  v.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
+  return out;
+}
+
+const u32 = (...vals) => {
+  const d = new Uint8Array(vals.length * 4);
+  const v = new DataView(d.buffer);
+  vals.forEach((n, i) => v.setUint32(i * 4, n));
+  return d;
+};
+
+/**
+ * ブラウザが吐く PNG は解像度もカラープロファイルも持たないため、
+ * そのままだと Photoshop 等で 72dpi 扱いになり、A2 なのに巨大な絵として開かれる。
+ * IHDR の直後に pHYs（解像度）と sRGB 一式を差し込んで体裁を整える。
+ */
+async function stampPngMetadata(blob, dpi) {
+  try {
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    const v = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const type = String.fromCharCode(...buf.subarray(12, 16));
+    if (type !== 'IHDR') return blob;                 // 想定外の形なら触らない
+    const ihdrEnd = 8 + 4 + 4 + v.getUint32(8) + 4;
+
+    const ppm = Math.max(1, Math.round(dpi / 0.0254));  // 1メートルあたりのピクセル数
+    const extra = [
+      pngChunk('pHYs', new Uint8Array([...u32(ppm, ppm), 1])),   // 単位 1 = メートル
+      pngChunk('sRGB', new Uint8Array([0])),                     // 0 = 知覚的
+      pngChunk('gAMA', u32(45455)),                              // sRGB を書くとき推奨の値
+      pngChunk('cHRM', u32(31270, 32900, 64000, 33000, 30000, 60000, 15000, 6000)),
+    ];
+    const parts = [buf.subarray(0, ihdrEnd), ...extra, buf.subarray(ihdrEnd)];
+    return new Blob(parts, { type: 'image/png' });
+  } catch {
+    return blob;   // 失敗しても画素は正しいので、そのまま出す
+  }
+}
 async function exportComposite() {
   if (busy) return;
   const { w: dw, h: dh } = docSize();
@@ -889,15 +949,16 @@ async function exportComposite() {
     }
 
     setStatus('PNGに変換中…（大きいので少し待ちます）', 'busy');
-    const blob = await new Promise((res, rej) =>
+    const raw = await new Promise((res, rej) =>
       c.toBlob((b) => (b ? res(b) : rej(new Error('PNG変換に失敗しました'))), 'image/png'));
+    const blob = await stampPngMetadata(raw, state.dpi);
 
     const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')
       .replace(/(\d{8})(\d{6})/, '$1_$2');
     const name = `composite_${stamp}.png`;
     setStatus('保存中… ' + fmtBytes(blob.size), 'busy');
     await Backend.saveExport(name, blob);
-    setStatus(`書き出し完了: _export/${name} (${fmtBytes(blob.size)})`, 'ok');
+    setStatus(`書き出し完了: _export/${name} (${fmtBytes(blob.size)} / ${state.dpi}dpi)`, 'ok');
   } catch (e) {
     setStatus('書き出し失敗: ' + (e.message || e), 'err');
   } finally {
