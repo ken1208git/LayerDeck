@@ -315,47 +315,126 @@ fn harden_webview(window: &tauri::WebviewWindow) {
 #[cfg(not(windows))]
 fn harden_webview(_window: &tauri::WebviewWindow) {}
 
-/// 窓を画面の作業領域（タスクバーを除いた範囲）に収める。
-///   ・窓が作業領域より大きい → 作業領域の 92% に縮めて中央へ
-///   ・大きさは収まるが、はみ出している → 位置だけ内側へ戻す
-/// 前回の大きさと位置は window-state プラグインが復元するが、
-/// 画面の小さい PC（例: 1440×852）では初期サイズのままだと下端がタスクバーの下に潜る。
-fn fit_into_work_area(w: &tauri::WebviewWindow) {
-    if w.is_maximized().unwrap_or(false) || w.is_fullscreen().unwrap_or(false) {
-        return;
-    }
-    let monitor = w
-        .current_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| w.primary_monitor().ok().flatten());
-    let Some(monitor) = monitor else { return };
-    let area = *monitor.work_area();
-    let (Ok(pos), Ok(outer), Ok(inner)) = (w.outer_position(), w.outer_size(), w.inner_size()) else {
-        return;
-    };
-    // 枠（タイトルバーなど）の分。set_size は枠を除いた中身の大きさを指定するため
-    let frame_w = outer.width.saturating_sub(inner.width);
-    let frame_h = outer.height.saturating_sub(inner.height);
-    let (left, top) = (area.position.x, area.position.y);
-    let (aw, ah) = (area.size.width, area.size.height);
+// ---------------------------------------------------------------------
+// 窓を画面の作業領域（タスクバーを除いた範囲）に収める
+// ---------------------------------------------------------------------
+/// 前回の大きさと位置は window-state プラグインが復元するが、前回の形そのものが
+/// はみ出していると毎回はみ出す（初期サイズ 1360×860 は作業領域 1440×852 の PC で潜る →
+/// 閉じるとその形が保存される → 次も復元される）。
+/// 前回の形はできるだけ残し、はみ出した分だけ縮めて、はみ出した分だけずらす。
+///
+/// 最大化中も「最大化を解除したときの形」を直す必要があるので、Tauri の API ではなく
+/// Win32 の GetWindowPlacement / SetWindowPlacement で直接書き換える。
+#[cfg(windows)]
+mod winfit {
+    use std::ffi::c_void;
 
-    if outer.width > aw || outer.height > ah {
-        let ow = (aw as f64 * 0.92) as u32;
-        let oh = (ah as f64 * 0.92) as u32;
-        let _ = w.set_size(tauri::PhysicalSize::new(ow.saturating_sub(frame_w), oh.saturating_sub(frame_h)));
-        let x = left + (aw.saturating_sub(ow) / 2) as i32;
-        let y = top + (ah.saturating_sub(oh) / 2) as i32;
-        let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
-        return;
+    #[repr(C)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct Rect {
+        pub left: i32,
+        pub top: i32,
+        pub right: i32,
+        pub bottom: i32,
     }
-    let max_x = (left + aw as i32 - outer.width as i32).max(left);
-    let max_y = (top + ah as i32 - outer.height as i32).max(top);
-    let (x, y) = (pos.x.clamp(left, max_x), pos.y.clamp(top, max_y));
-    if (x, y) != (pos.x, pos.y) {
-        let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+
+    #[repr(C)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    #[repr(C)]
+    struct WindowPlacement {
+        length: u32,
+        flags: u32,
+        show_cmd: u32,
+        pt_min_position: Point,
+        pt_max_position: Point,
+        rc_normal_position: Rect,
+    }
+
+    #[repr(C)]
+    struct MonitorInfo {
+        cb_size: u32,
+        rc_monitor: Rect,
+        rc_work: Rect,
+        dw_flags: u32,
+    }
+
+    const MONITOR_DEFAULTTONEAREST: u32 = 2;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetWindowPlacement(hwnd: *mut c_void, wp: *mut WindowPlacement) -> i32;
+        fn SetWindowPlacement(hwnd: *mut c_void, wp: *const WindowPlacement) -> i32;
+        fn MonitorFromWindow(hwnd: *mut c_void, flags: u32) -> *mut c_void;
+        fn GetMonitorInfoW(monitor: *mut c_void, mi: *mut MonitorInfo) -> i32;
+    }
+
+    /// r を area に収める。area より大きい辺だけ縮め、はみ出している分だけずらす
+    pub fn fit_rect(r: Rect, area: Rect) -> Rect {
+        let w = (r.right - r.left).min(area.right - area.left);
+        let h = (r.bottom - r.top).min(area.bottom - area.top);
+        let x = r.left.clamp(area.left, area.right - w);
+        let y = r.top.clamp(area.top, area.bottom - h);
+        Rect { left: x, top: y, right: x + w, bottom: y + h }
+    }
+
+    /// first_launch: 保存された形が無い（初めての起動）。このときは作業領域の中央に置く
+    pub fn fit(hwnd: *mut c_void, first_launch: bool) {
+        unsafe {
+            let mut wp: WindowPlacement = std::mem::zeroed();
+            wp.length = std::mem::size_of::<WindowPlacement>() as u32;
+            if GetWindowPlacement(hwnd, &mut wp) == 0 {
+                return;
+            }
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut mi: MonitorInfo = std::mem::zeroed();
+            mi.cb_size = std::mem::size_of::<MonitorInfo>() as u32;
+            if monitor.is_null() || GetMonitorInfoW(monitor, &mut mi) == 0 {
+                return;
+            }
+            // rcNormalPosition は画面座標ではなく「ワークスペース座標」（タスクバーの分だけずらした座標）。
+            // 作業領域をその座標で表すと、モニターの左上から作業領域の幅・高さを取った範囲になる。
+            // タスクバーが下や右にあるときはずれが 0 なので、画面座標と同じ
+            let (m, work) = (mi.rc_monitor, mi.rc_work);
+            let area = Rect {
+                left: m.left,
+                top: m.top,
+                right: m.left + (work.right - work.left),
+                bottom: m.top + (work.bottom - work.top),
+            };
+            if area.right <= area.left || area.bottom <= area.top {
+                return;
+            }
+            let mut fitted = fit_rect(wp.rc_normal_position, area);
+            if first_launch {
+                let (w, h) = (fitted.right - fitted.left, fitted.bottom - fitted.top);
+                let x = area.left + (area.right - area.left - w) / 2;
+                let y = area.top + (area.bottom - area.top - h) / 2;
+                fitted = Rect { left: x, top: y, right: x + w, bottom: y + h };
+            }
+            if fitted != wp.rc_normal_position {
+                wp.rc_normal_position = fitted;
+                SetWindowPlacement(hwnd, &wp);
+            }
+        }
     }
 }
+
+#[cfg(windows)]
+fn fit_into_work_area(w: &tauri::WebviewWindow, first_launch: bool) {
+    if w.is_fullscreen().unwrap_or(false) {
+        return;
+    }
+    if let Ok(hwnd) = w.hwnd() {
+        winfit::fit(hwnd.0 as *mut std::ffi::c_void, first_launch);
+    }
+}
+
+#[cfg(not(windows))]
+fn fit_into_work_area(_w: &tauri::WebviewWindow, _first_launch: bool) {}
 
 // ---------------------------------------------------------------------
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -391,8 +470,14 @@ pub fn run() {
 
             if let Some(w) = app.get_webview_window("main") {
                 harden_webview(&w);
-                // 前回の大きさ・位置が復元されたあとで、画面からはみ出していないか直す
-                fit_into_work_area(&w);
+                // 前回の大きさ・位置が復元されたあとで、画面からはみ出していないか直す。
+                // 形の保存ファイルは終了時に作られるので、無ければ初めての起動
+                let first_launch = handle
+                    .path()
+                    .app_config_dir()
+                    .map(|d| !d.join(tauri_plugin_window_state::DEFAULT_FILENAME).exists())
+                    .unwrap_or(false);
+                fit_into_work_area(&w, first_launch);
             }
 
             // 前回開いていたフォルダがあれば、そのまま復帰する

@@ -69,7 +69,6 @@ const ICON = {
   up: svg('<path d="M6 15l6-6 6 6"/>', 'stroke-width="2.6"'),
   down: svg('<path d="M6 9l6 6 6-6"/>', 'stroke-width="2.6"'),
   tune: svg('<path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/>'),
-  close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
   grip: svg('<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>', 'fill="currentColor" stroke="none"'),
 };
 
@@ -114,7 +113,7 @@ const cut = { key: '', path: null, stats: null, timer: 0, running: false, waitin
 
 const newLayer = (name) => ({
   name, visible: true, opacity: 1, blend: 'source-over',
-  x: 0, y: 0, scale: 1, flipH: false, open: false, missing: false,
+  x: 0, y: 0, scale: 1, flipH: false, open: false, missing: false, goneAt: 0,
 });
 
 const newTileset = (name, ver) => ({
@@ -143,7 +142,7 @@ function setStatus(msg, kind = '', noLog = false) {
   el.textContent = msg || '';
   el.className = 'status ' + kind;
   if (kind === 'err' && msg && !noLog && msg !== lastLoggedErr) { lastLoggedErr = msg; log('error', msg); }
-  // 書き出しの進行中だけ、ダイアログ側にも映す（監視中などの常時表示は映さない）
+  // 書き出しの進行中だけ、ダイアログ側にも映す（「最新の状態」などの常時表示は映さない）
   const m = $('#exportStatus');
   if (m && busy && !$('#exportModal').hidden) {
     m.textContent = msg || '';
@@ -208,7 +207,8 @@ function judge(ts, pm) {
   let note = '';
   if (ts.dpi && Math.abs(ts.dpi.x - state.dpi) > 0.5) note = `（画像の記録は ${Math.round(ts.dpi.x)}dpi）`;
   if (Math.abs(ts.w - ex.w) <= 2 && Math.abs(ts.h - ex.h) <= 2) {
-    return { ok: true, short: '✓ 規格どおり' + note, detail: `${pm.label}・${state.dpi}dpi の ${ex.w}×${ex.h}px と一致` + note };
+    // 合っている行には何も足さない（全体の判定は「用紙・解像度」欄に一行で出す）
+    return { ok: true, short: note, detail: `${pm.label}・${state.dpi}dpi の ${ex.w}×${ex.h}px と一致` + note };
   }
   // 用紙ぴったりで、塗り足しの分だけ足りない（よくある取り違え）
   if (state.bleed > 0) {
@@ -465,6 +465,9 @@ function insertByName(L) {
   if (i < 0) state.layers.push(L); else state.layers.splice(i, 0, L);
 }
 
+/** ファイルが見えなくなってから一覧から外すまでの猶予。保存のしかたによっては上書きの途中で一瞬消えるため */
+const GONE_GRACE_MS = 1500;
+
 async function poll() {
   if (!state.dir) return;
   let files;
@@ -485,6 +488,7 @@ async function poll() {
     let L = state.layers.find((l) => l.name === f.name);
     if (!L) { L = newLayer(f.name); insertByName(L); dirty = true; }
     if (L.missing) { L.missing = false; dirty = true; }
+    L.goneAt = 0;
 
     const ts = tilesets.get(f.name);
     // 2回続けて同じ版が見えた＝書き込み完了とみなす（巨大PNGの途中読みを防ぐ）
@@ -495,8 +499,17 @@ async function poll() {
     }
   }
 
+  // 消えたファイルは、少し待ってから黙って一覧から外す。設定は state.layers に残して保存もし、
+  // 同じ名前のファイルが戻ってきたら元の位置・設定のまま一覧に戻す
+  const now = Date.now();
   for (const L of state.layers) {
-    if (!present.has(L.name) && !L.missing) { L.missing = true; dirty = true; }
+    if (present.has(L.name) || L.missing) continue;
+    if (!L.goneAt) { L.goneAt = now; setTimeout(poll, GONE_GRACE_MS + 100); continue; }
+    if (now - L.goneAt < GONE_GRACE_MS) continue;
+    L.missing = true; L.goneAt = 0;
+    dropTileset(L.name);
+    log('info', `ファイルが無くなったので一覧から外す: ${L.name}`);
+    dirty = true;
   }
   for (const k of [...seen.keys()]) if (!present.has(k)) seen.delete(k);
 
@@ -531,7 +544,13 @@ function updateStatusLine() {
   for (const ts of tilesets.values()) {
     if (ts.status === 'tiling') { working++; done += ts.done; total += ts.total; }
   }
-  if (!working) { if (state.dir) setStatus('監視中', 'ok'); return; }
+  // 見つけたが書き込み完了を待っていて、まだ読み込みを始めていないものも数える。
+  // 数えないと、保存した直後に一瞬「最新の状態」と出てしまう
+  for (const [name, ver] of seen) {
+    const ts = tilesets.get(name);
+    if (!ts || ts.ver !== ver) working++;
+  }
+  if (!working) { if (state.dir) setStatus('✓ 最新の状態', 'ok'); return; }
   const pct = total ? Math.round(done / total * 100) : 0;
   setStatus(`読み込み中 ${working}枚 (${pct}%)`, 'busy');
 }
@@ -1169,23 +1188,24 @@ function renderLayersNow() {
   const box = $('#layers');
   const openState = new Map(state.layers.map((l) => [l.name, l.open]));
   box.innerHTML = '';
-  $('#layerCount').textContent = state.layers.length ? `(${state.layers.length})` : '';
+  // ファイルが無いレイヤーは出さない（設定だけ裏で覚えている）
+  const shown = state.layers.filter((L) => !L.missing);
+  $('#layerCount').textContent = shown.length ? `(${shown.length})` : '';
   const tooMany = !$('#tooMany').classList.contains('hide');
   $('#empty').classList.toggle('hide', !!state.dir || tooMany);
 
   const { w: dw, h: dh } = docSize();
   const pm = dw ? paperMM(dw, dh) : null;
   // 画面上が最前面なので、配列とは逆順に並べる
-  for (let i = state.layers.length - 1; i >= 0; i--) {
-    const L = state.layers[i];
+  for (let i = shown.length - 1; i >= 0; i--) {
+    const L = shown[i];
     L.open = openState.get(L.name) || false;
-    box.appendChild(layerRow(L, i, pm));
+    box.appendChild(layerRow(L, i === shown.length - 1, i === 0, pm));
   }
   updateSpec();
 }
 
 function layerSubtitle(L, ts, pm) {
-  if (L.missing) return { text: '⚠ ファイルが見つかりません', cls: 'bad' };
   if (!ts) return { text: '待機中…' };
   if (ts.status === 'error') return { text: '⚠ 読み込みに失敗しました', cls: 'bad' };
   if (!ts.w) return { text: '読み込み中…' };
@@ -1194,19 +1214,17 @@ function layerSubtitle(L, ts, pm) {
   const extra = (L.scale !== 1 ? ` ×${L.scale.toFixed(2)}` : '') + (L.x || L.y ? `  ⇢ ${L.x},${L.y}` : '') + (L.flipH ? '  ⇄' : '');
   const j = judge(ts, pm);
   return {
-    text: `${head}${ts.w}×${ts.h}${extra}${j ? '  ' + j.short : ''}`,
+    text: `${head}${ts.w}×${ts.h}${extra}${j && j.short ? '  ' + j.short : ''}`,
     title: j ? j.detail : '',
-    cls: j ? (j.ok ? 'ok' : 'bad') : '',
+    cls: j && !j.ok ? 'bad' : '',
   };
 }
 
-function layerRow(L, idx, pm) {
+function layerRow(L, isTop, isBottom, pm) {
   const ts = tilesets.get(L.name);
   const row = document.createElement('div');
-  row.className = 'row' + (L.missing ? ' missing' : '') + (L.open ? ' open' : '') +
-    (L.visible ? '' : ' hidden-layer');
+  row.className = 'row' + (L.open ? ' open' : '') + (L.visible ? '' : ' hidden-layer');
   row.dataset.name = L.name;
-  row.dataset.idx = String(idx);
   row.draggable = false;   // つまみを持ったときだけ true にする（下の initRowDnd）
 
   const thumb = ts && ts.thumb;
@@ -1221,11 +1239,10 @@ function layerRow(L, idx, pm) {
         <div class="sub ${sub.cls || ''}" title="${escapeHtml(sub.title || '')}">${escapeHtml(sub.text)}</div>
       </div>
       <div class="ord">
-        <button class="ob up" title="ひとつ手前へ"${idx === state.layers.length - 1 ? ' disabled' : ''}>${ICON.up}</button>
-        <button class="ob dn" title="ひとつ奥へ"${idx === 0 ? ' disabled' : ''}>${ICON.down}</button>
+        <button class="ob up" title="ひとつ手前へ"${isTop ? ' disabled' : ''}>${ICON.up}</button>
+        <button class="ob dn" title="ひとつ奥へ"${isBottom ? ' disabled' : ''}>${ICON.down}</button>
       </div>
-      ${L.missing ? `<button class="gear del" title="一覧から消す（ファイルは消しません）">${ICON.close}</button>`
-                  : `<button class="gear" title="位置・拡大・反転">${ICON.tune}</button>`}
+      <button class="gear" title="位置・拡大・反転">${ICON.tune}</button>
     </div>
     <div class="row-ctl">
       <select class="blend">${BLENDS.map(([v, n]) =>
@@ -1245,15 +1262,20 @@ function layerRow(L, idx, pm) {
 
   row.querySelector('.eye').addEventListener('click', (e) => {
     if (e.altKey) {
-      const solo = state.layers.filter((l) => l !== L).every((l) => !l.visible) && L.visible;
-      state.layers.forEach((l) => { l.visible = solo ? true : (l === L); });
+      // 一覧に出ていないレイヤーの表示状態は変えない（ファイルが戻ったときにそのまま出るように）
+      const others = state.layers.filter((l) => l !== L && !l.missing);
+      const solo = L.visible && others.every((l) => !l.visible);
+      L.visible = true;
+      others.forEach((l) => { l.visible = solo; });
     } else L.visible = !L.visible;
     renderLayers(); upd();
   });
 
   const move = (d) => {
+    // 一覧に出ていないレイヤーは飛ばして、見えている隣と入れ替える
     const i = state.layers.indexOf(L);
-    const j = i + d;
+    let j = i + d;
+    while (j >= 0 && j < state.layers.length && state.layers[j].missing) j += d;
     if (i < 0 || j < 0 || j >= state.layers.length) return;
     [state.layers[i], state.layers[j]] = [state.layers[j], state.layers[i]];
     renderLayers(); upd();
@@ -1261,19 +1283,9 @@ function layerRow(L, idx, pm) {
   row.querySelector('.up').addEventListener('click', () => move(1));   // 画面上＝配列の後ろ
   row.querySelector('.dn').addEventListener('click', () => move(-1));
 
-  const gear = row.querySelector('.gear');
-  if (L.missing) {
-    gear.addEventListener('click', () => {
-      const i = state.layers.indexOf(L);
-      if (i >= 0) state.layers.splice(i, 1);
-      dropTileset(L.name);
-      renderLayers(); upd();
-    });
-  } else {
-    gear.addEventListener('click', () => {
-      L.open = !L.open; row.classList.toggle('open', L.open);
-    });
-  }
+  row.querySelector('.gear').addEventListener('click', () => {
+    L.open = !L.open; row.classList.toggle('open', L.open);
+  });
 
   row.querySelector('.blend').addEventListener('change', (e) => { L.blend = e.target.value; upd(); });
   row.querySelector('.op').addEventListener('input', (e) => {
@@ -1678,7 +1690,7 @@ function adoptDir(j) {
   if (j.mem) { mem = j.mem; budget = clamp(Math.round(mem.avail * 0.25), 96 * MB, 1536 * MB); }
   state.view.fitted = false;
   renderLayers(); requestRender();
-  setStatus('監視中', 'ok');
+  setStatus('読み込み中…', 'busy');
   poll();
 }
 
