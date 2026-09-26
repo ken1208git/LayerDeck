@@ -273,6 +273,139 @@ fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
     std::fs::rename(&tmp, &f).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------
+// 履歴（上書きされる前の版）
+//   %LOCALAPPDATA%\com.layerdeck.desktop\history\<作業フォルダのID>\ に置く。
+//   何を残すか・いつ消すかは画面側が決め、ここは読み書きと削除と大きさの集計だけ。
+// ---------------------------------------------------------------------
+fn history_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("history");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// 履歴の中の場所。英数字と . _ - / だけを許し、履歴のフォルダの外へ出られないようにする
+fn history_path(app: &tauri::AppHandle, rel: &str) -> Result<PathBuf, String> {
+    let ok = !rel.is_empty()
+        && !rel.starts_with('/')
+        && !rel.contains("..")
+        && rel.chars().all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c));
+    if !ok {
+        return Err(format!("履歴の場所として使えない名前です: {rel}"));
+    }
+    Ok(history_root(app)?.join(rel))
+}
+
+/// 画像のバイト列をそのまま受け取って書く（JSON に変換すると数MBの画像では重いため）
+#[tauri::command]
+fn history_write(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let rel = request
+        .headers()
+        .get("x-rel")
+        .and_then(|v| v.to_str().ok())
+        .ok_or("書き込む場所の指定がありません")?
+        .to_owned();
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("中身がバイト列ではありません".into());
+    };
+    let p = history_path(&app, &rel)?;
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = p.with_extension("tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn history_read(app: tauri::AppHandle, rel: String) -> Result<tauri::ipc::Response, String> {
+    let p = history_path(&app, &rel)?;
+    std::fs::read(&p)
+        .map(tauri::ipc::Response::new)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn history_remove(app: tauri::AppHandle, rel: String) -> Result<(), String> {
+    let p = history_path(&app, &rel)?;
+    let r = if p.is_dir() {
+        std::fs::remove_dir_all(&p)
+    } else {
+        std::fs::remove_file(&p)
+    };
+    match r {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
+}
+
+fn dir_size(p: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(p) else { return 0 };
+    entries
+        .flatten()
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_dir() => dir_size(&e.path()),
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
+#[derive(Serialize)]
+struct HistoryDir {
+    id: String,
+    bytes: u64,
+}
+
+/// 作業フォルダごとの履歴の一覧と、それぞれの大きさ
+#[tauri::command]
+fn history_list(app: tauri::AppHandle) -> Result<Vec<HistoryDir>, String> {
+    let root = history_root(&app)?;
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(&root).map_err(|e| e.to_string())?.flatten() {
+        if e.path().is_dir() {
+            if let Some(id) = e.file_name().to_str() {
+                out.push(HistoryDir { id: id.to_owned(), bytes: dir_size(&e.path()) });
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Serialize)]
+struct HistoryStats {
+    used: u64,
+    free: Option<u64>,
+}
+
+#[tauri::command]
+fn history_stats(app: tauri::AppHandle) -> Result<HistoryStats, String> {
+    let root = history_root(&app)?;
+    Ok(HistoryStats { used: dir_size(&root), free: disk_free(&root) })
+}
+
+/// そのドライブの空き容量（このユーザーが使える分）
+#[cfg(windows)]
+fn disk_free(p: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(dir: *const u16, avail: *mut u64, total: *mut u64, free: *mut u64) -> i32;
+    }
+    let wide: Vec<u16> = p.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let (mut avail, mut total, mut free) = (0u64, 0u64, 0u64);
+    (unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut avail, &mut total, &mut free) } != 0).then_some(avail)
+}
+
+#[cfg(not(windows))]
+fn disk_free(_p: &Path) -> Option<u64> {
+    None
+}
+
 /// 確認用の書き出し先（作業フォルダの _export）を用意して、その場所を返す。
 /// フォルダを開いただけで _export ができてしまわないよう、書き出す直前に作る。
 #[tauri::command]
@@ -488,7 +621,12 @@ pub fn run() {
             append_log,
             log_path,
             load_settings,
-            save_settings
+            save_settings,
+            history_write,
+            history_read,
+            history_remove,
+            history_list,
+            history_stats
         ])
         .setup(|app| {
             let handle = app.handle().clone();

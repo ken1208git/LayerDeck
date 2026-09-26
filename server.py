@@ -15,6 +15,8 @@ Python 標準ライブラリのみで動作する（pip install 不要）。
 from __future__ import annotations
 
 import argparse
+import re
+import shutil
 import json
 import mimetypes
 import os
@@ -33,6 +35,27 @@ PROJECT_NAME = "layerdeck.project.json"
 EXPORT_DIR = "_export"
 # アプリ全体の設定（デスクトップ版では %APPDATA%\com.layerdeck.desktop\settings.json）。開発用は手元に置く
 SETTINGS_FILE = APP_DIR / ".dev-settings.json"
+# 履歴（デスクトップ版では %LOCALAPPDATA%\com.layerdeck.desktop\history）。開発用は手元に置く
+HIST_ROOT = APP_DIR / ".dev-history"
+_HIST_OK = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def hist_path(rel):
+    """履歴の中の場所。外へ出られないようにする"""
+    if not rel or rel.startswith("/") or ".." in rel or not _HIST_OK.match(rel):
+        return None
+    return HIST_ROOT / rel
+
+
+def dir_size(p):
+    total = 0
+    for root, _dirs, files in os.walk(p):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
 
 UI_DIR = APP_DIR / "ui"
 STATIC = {
@@ -42,6 +65,7 @@ STATIC = {
     "/backend.js": ("backend.js", "text/javascript; charset=utf-8"),
     "/tiler.js": ("tiler.js", "text/javascript; charset=utf-8"),
     "/edger.js": ("edger.js", "text/javascript; charset=utf-8"),
+    "/differ.js": ("differ.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/licenses.txt": ("licenses.txt", "text/plain; charset=utf-8"),
 }
@@ -260,6 +284,32 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/mem":
             return self._json({"ok": True, "mem": mem_status()})
 
+        if path == "/api/hist/read":
+            p = hist_path((q.get("rel") or [""])[0])
+            if not p or not p.is_file():
+                # 無いのは普通のこと（初めて開いたフォルダなど）。エラー扱いにしない
+                self.send_response(204)
+                self.end_headers()
+                return
+            data = p.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
+        if path == "/api/hist/list":
+            HIST_ROOT.mkdir(exist_ok=True)
+            dirs = [{"id": d.name, "bytes": dir_size(d)} for d in HIST_ROOT.iterdir() if d.is_dir()]
+            return self._json({"ok": True, "dirs": dirs})
+
+        if path == "/api/hist/stats":
+            HIST_ROOT.mkdir(exist_ok=True)
+            return self._json({"ok": True, "used": dir_size(HIST_ROOT),
+                               "free": shutil.disk_usage(HIST_ROOT).free})
+
         if path == "/api/settings":
             try:
                 settings = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
@@ -288,7 +338,28 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- POST -------------------------------------------------------
     def do_POST(self):
-        path = urlparse(self.path).path
+        u = urlparse(self.path)
+        path = u.path
+        q = parse_qs(u.query)
+
+        if path in ("/api/hist/write", "/api/hist/remove"):
+            p = hist_path((q.get("rel") or [""])[0])
+            if not p:
+                return self._err("bad path")
+            try:
+                if path == "/api/hist/write":
+                    body = self._body()
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = p.with_suffix(".tmp")
+                    tmp.write_bytes(body)
+                    os.replace(tmp, p)
+                elif p.is_dir():
+                    shutil.rmtree(p)
+                elif p.exists():
+                    p.unlink()
+            except OSError as e:
+                return self._err(str(e), 500)
+            return self._json({"ok": True})
 
         if path == "/api/settings":
             try:

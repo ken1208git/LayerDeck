@@ -51,6 +51,21 @@
       </div>
     </div>
 
+    <div id="seekbar" class="seekbar" hidden>
+      <div class="seek-head">
+        <span id="seekLabel" class="seek-label"></span>
+        <span class="sp"></span>
+        <label class="seek-check"><input type="checkbox" id="chkSeekDiff" checked>今との違いを紫で囲む</label>
+        <button class="btn tiny" id="btnSeekNow">今に戻る</button>
+        <button class="btn tiny" id="btnSeekClose" title="シークバーを閉じる">閉じる</button>
+      </div>
+      <div class="seek-body">
+        <div id="seekTip" class="seek-tip" hidden></div>
+        <canvas id="seekTrack" class="seek-track"></canvas>
+      </div>
+      <div id="seekNote" class="seek-note"></div>
+    </div>
+
     <button id="soloBanner" class="solo-banner" title="押すとソロを解除" hidden></button>
     <div id="hoverTip" class="hover-tip" hidden></div>
 
@@ -95,6 +110,7 @@
         <button class="btn icon toggle" id="btnGuide" data-icon="guide" title="ガイドを表示"></button>
         <button class="btn icon caret" id="btnGuideOpts" data-icon="caret" title="ガイドの種類"></button>
       </span>
+      <button class="btn icon toggle" id="btnHist" data-icon="history" title="履歴：シークバーで過去の版に戻して見る"></button>
       <button class="btn icon" id="btnBg" data-icon="bg" title="背景を切り替え：市松／白／灰／黒 (B)"></button>
     </div>
 
@@ -211,6 +227,41 @@
         </div>
         <div class="note">境目のドラッグで変えた大きさを、最初の大きさに戻します</div>
       </div>
+      <div class="set-group">
+        <div class="set-title">履歴（シークバー）</div>
+        <label class="set-row">過去の版の画質
+          <select id="selHistQuality">
+            <option value="light">軽い（長い辺 約1500px）</option>
+            <option value="std">標準（長い辺 約3000px）</option>
+            <option value="full">原寸</option>
+          </select>
+        </label>
+        <label class="set-row">容量の上限
+          <select id="selHistCap">
+            <option value="500">500MB</option>
+            <option value="1024">1GB</option>
+            <option value="2048">2GB</option>
+            <option value="5120">5GB</option>
+            <option value="10240">10GB</option>
+            <option value="20480">20GB</option>
+          </select>
+        </label>
+        <label class="set-row">残す期間
+          <select id="selHistDays">
+            <option value="30">30日</option>
+            <option value="60">60日</option>
+            <option value="90">90日</option>
+            <option value="180">180日</option>
+            <option value="0">無期限</option>
+          </select>
+        </label>
+        <div class="note" id="histUsage"></div>
+        <div class="set-row">
+          <span>履歴を消す（今の版だけ残す）</span>
+          <button class="btn tiny" id="btnHistClear">消す</button>
+        </div>
+        <div class="note">上限を超えると、古い版から消えます。最後に開いてから期間を過ぎた作業フォルダの履歴も消えます。画質を変えると、そのあとの保存から効きます。</div>
+      </div>
     </div>
     <div class="modal-foot">
       <div class="status"></div>
@@ -230,6 +281,7 @@
         <li><b>E</b> 縁取り表示（ゴミ探し・切り抜きのふちの確認）。縁取りにカーソルを乗せると、どのレイヤーの色かが出ます</li>
         <li><b>B</b> 背景の切り替え</li>
         <li>縁取り表示とガイドの設定は、右上のボタンの横の <b>▾</b> から</li>
+        <li><b>時計のボタン</b> 履歴のシークバー。上書きのたびに記録された過去の版に戻して見られます（<b>← →</b> で1つずつ）</li>
         <li>右の列の幅と、レイヤー一覧と「用紙・解像度」の境目は、<b>ドラッグ</b>で変えられます（<b>ダブルクリック</b>で元に戻る）</li>
         <li><b>目のアイコンを Alt+クリック</b> ソロ（そのレイヤーだけ表示。複数可、<b>Esc</b> で解除すると元の表示に戻る）</li>
         <li>同じ名前で上書き保存すると、表示が差し替わります</li>

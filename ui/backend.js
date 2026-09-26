@@ -23,6 +23,10 @@
     return o;
   }
 
+  // この画面が開いているフォルダ。サーバーが別のフォルダで起動し直されたら、画面を読み込み直す
+  // （古い画面が新しいフォルダの画像を自分のものとして扱い、設定や履歴を混ぜてしまうため）
+  let pageDir = null;
+
   const httpBackend = {
     kind: 'http',
     /** フォルダ変更の即時通知は無い（画面側のポーリングに任せる） */
@@ -30,14 +34,18 @@
 
     async getState() {
       const s = await j('/api/state');
+      pageDir = s.dir || null;
       return { dir: s.dir, files: s.files || [], project: s.project || null, mem: s.mem || null };
     },
     async listFiles() {
-      return (await j('/api/files')).files || [];
+      const s = await j('/api/files');
+      if (pageDir && s.dir !== pageDir) { location.reload(); return []; }
+      return s.files || [];
     },
     async pickFolder() {
       const s = await j('/api/pick', { method: 'POST' });
       if (s.cancelled || !s.dir) return null;
+      pageDir = s.dir;
       return { dir: s.dir, files: s.files || [], project: s.project || null, mem: s.mem || null };
     },
     async readImage(name, ver) {
@@ -56,6 +64,23 @@
         body: JSON.stringify(obj),
       });
     },
+    /** 履歴（上書きされる前の版）。rel は「作業フォルダのID/ファイル名」 */
+    hist: {
+      async read(rel) {
+        const r = await fetch(`/api/hist/read?rel=${enc(rel)}`, { cache: 'no-store' });
+        return r.ok && r.status !== 204 ? await r.arrayBuffer() : null;
+      },
+      async write(rel, data) {
+        const r = await fetch(`/api/hist/write?rel=${enc(rel)}`, { method: 'POST', body: data });
+        if (!r.ok) throw new Error('履歴を書けません: ' + rel);
+      },
+      async remove(rel) {
+        await fetch(`/api/hist/remove?rel=${enc(rel)}`, { method: 'POST' });
+      },
+      async list() { return (await j('/api/hist/list')).dirs || []; },
+      async stats() { const s = await j('/api/hist/stats'); return { used: s.used, free: s.free }; },
+    },
+
     /** アプリ全体の設定（作業フォルダをまたいで共通） */
     async loadSettings() {
       return (await j('/api/settings')).settings || null;
@@ -139,6 +164,22 @@
       async memStatus() { return await invoke('mem_status'); },
 
       async saveProject(obj) { await invoke('write_project', { json: JSON.stringify(obj) }); },
+
+      /** 履歴。%LOCALAPPDATA%\com.layerdeck.desktop\history\ の中。画像はバイト列のまま渡す */
+      hist: {
+        async read(rel) {
+          try { return await invoke('history_read', { rel }); } catch { return null; }
+        },
+        async write(rel, data) {
+          const bytes = data instanceof Blob ? new Uint8Array(await data.arrayBuffer())
+            : typeof data === 'string' ? new TextEncoder().encode(data)
+            : new Uint8Array(data);
+          await invoke('history_write', bytes, { headers: { 'x-rel': rel } });
+        },
+        async remove(rel) { await invoke('history_remove', { rel }); },
+        async list() { return await invoke('history_list'); },
+        async stats() { return await invoke('history_stats'); },
+      },
 
       /** アプリ全体の設定。%APPDATA%\com.layerdeck.desktop\settings.json */
       async loadSettings() {

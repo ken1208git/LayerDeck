@@ -67,10 +67,31 @@ function readDpi(buf) {
   return null;
 }
 
-async function run({ name, ver, buf }) {
+/** 長い辺が long 以下になる、いちばん細かい段。どれも大きければいちばん粗い段 */
+function pickLevel(levels, long) {
+  for (let k = 0; k < levels.length; k++) {
+    if (Math.max(levels[k].w, levels[k].h) <= long) return k;
+  }
+  return levels.length - 1;
+}
+
+/** 段の絵を PNG にする（原寸の段は ImageBitmap なのでキャンバスに描いてから） */
+async function levelBlob(img, w, h) {
+  if (img.convertToBlob) return await img.convertToBlob({ type: 'image/png' });
+  const c = new OffscreenCanvas(w, h);
+  c.getContext('2d').drawImage(img, 0, 0);
+  return await c.convertToBlob({ type: 'image/png' });
+}
+
+/**
+ * hist: 履歴に残すなら { long, thumb }。long は残す画質（長い辺の px、0 は原寸）、
+ *       thumb はシークバーを動かしている間に使う縮小版の長い辺。
+ */
+async function run({ name, ver, buf, hist }) {
   const dpi = readDpi(buf);
   // 画像のバイト列は本体側から転送されてくる（worker はバックエンドを直接触れない）
-  const src = await createImageBitmap(new Blob([buf]));
+  const srcBlob = new Blob([buf]);
+  const src = await createImageBitmap(srcBlob);
   const w0 = src.width, h0 = src.height;
 
   // 解像度の階段。0 が原寸で、数字が増えるほど粗い。
@@ -104,6 +125,11 @@ async function run({ name, ver, buf }) {
   const tg = tc.getContext('2d');
   let done = 0;
 
+  // 履歴に残す段。段は下の繰り返しで粗い順に手放すので、手放す前に取り出す
+  const hq = hist ? (hist.long > 0 ? pickLevel(levels, hist.long * 1.1) : 0) : -1;
+  const ht = hist ? pickLevel(levels, hist.thumb * 1.1) : -1;
+  const out = {};
+
   // 粗い段から先に返す＝先に「全体がそこそこ綺麗」になる
   for (let k = levels.length - 1; k >= 0; k--) {
     const lv = levels[k];
@@ -120,6 +146,11 @@ async function run({ name, ver, buf }) {
       // 行ごとに返すと、粗い段は即座に画面へ出る
       self.postMessage({ type: 'tiles', name, ver, level: k, items, done, total });
     }
+    if (k === ht) out.t = { blob: await levelBlob(srcs[k], lv.w, lv.h), w: lv.w, h: lv.h };
+    if (k === hq) {
+      // 原寸で残すときは、元のファイルのバイト列をそのまま使う（作り直すより速く、劣化もない）
+      out.q = { blob: k === 0 ? srcBlob : await levelBlob(srcs[k], lv.w, lv.h), w: lv.w, h: lv.h };
+    }
     if (k > 0) srcs[k] = null;  // この段はもう要らない
     self.postMessage({ type: 'level', name, ver, level: k, done, total });
   }
@@ -127,5 +158,9 @@ async function run({ name, ver, buf }) {
   src.close();
   srcs[0] = null;
 
+  if (out.q && out.t) {
+    self.postMessage({ type: 'hist', name, ver, w: w0, h: h0,
+      q: out.q.blob, qw: out.q.w, qh: out.q.h, t: out.t.blob, tw: out.t.w, th: out.t.h });
+  }
   self.postMessage({ type: 'done', name, ver, w: w0, h: h0, tile: TILE, levels });
 }

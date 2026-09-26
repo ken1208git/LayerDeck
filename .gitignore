@@ -24,3 +24,5 @@ _testmany/
 _testA2_250/
 _testratio/
 .dev-settings.json
+_testhistory/
+.dev-history/

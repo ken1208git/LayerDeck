@@ -67,6 +67,7 @@ const ICON = {
   settings: svg('<path d="M10.2 2.6 L13.8 2.6 L14.1 5.2 L15.3 5.7 L17.4 4.0 L20.0 6.6 L18.3 8.7 L18.8 9.9 L21.4 10.2 L21.4 13.8 L18.8 14.1 L18.3 15.3 L20.0 17.4 L17.4 20.0 L15.3 18.3 L14.1 18.8 L13.8 21.4 L10.2 21.4 L9.9 18.8 L8.7 18.3 L6.6 20.0 L4.0 17.4 L5.7 15.3 L5.2 14.1 L2.6 13.8 L2.6 10.2 L5.2 9.9 L5.7 8.7 L4.0 6.6 L6.6 4.0 L8.7 5.7 L9.9 5.2Z"/><circle cx="12" cy="12" r="2.8"/>'),
   help: svg('<circle cx="12" cy="12" r="9"/><path d="M9.4 9.3a2.7 2.7 0 0 1 5.2.9c0 1.8-2.6 2.2-2.6 4"/><circle cx="12" cy="17.3" r=".6" fill="currentColor"/>'),
   caret: svg('<path d="M7 10l5 5 5-5"/>', 'stroke-width="2.4"'),
+  history: svg('<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5v4h4"/><path d="M12 7.5V12l3 2"/>'),
   eye: svg('<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/>'),
   eyeOff: svg('<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z" opacity=".35"/><path d="M4 4l16 16"/>'),
   up: svg('<path d="M6 15l6-6 6 6"/>', 'stroke-width="2.6"'),
@@ -350,7 +351,7 @@ function pumpJobs() {
     Backend.readImage(job.name, job.ver).then((buf) => {
       const cur = tilesets.get(job.name);
       if (!cur || cur.ver !== job.ver) { slot.busy = false; pumpJobs(); return; }
-      slot.w.postMessage({ name: job.name, ver: job.ver, buf }, [buf]);
+      slot.w.postMessage({ name: job.name, ver: job.ver, buf, hist: histJobOptions(job.name, job.ver) }, [buf]);
     }).catch((e) => {
       // 画面には分かる言葉で、詳しい原因はログへ
       log('error', `読み込み失敗 ${job.name}: ${e.message || e}`);
@@ -387,6 +388,11 @@ function onWorkerMessage(slot, m) {
     ts.done = m.done;
     if (m.level === ts.levels.length - 1 && !ts.thumb) makeThumb(ts);
     requestRender();
+    return;
+  }
+
+  if (m.type === 'hist') {
+    if (!stale) histRecord(m).catch((e) => log('error', '履歴の記録: ' + (e.message || e)));
     return;
   }
 
@@ -540,6 +546,7 @@ async function poll() {
     if (now - L.goneAt < GONE_GRACE_MS) continue;
     L.missing = true; L.goneAt = 0;
     solo.delete(L.name);
+    histGone(L.name);
     dropTileset(L.name);
     log('info', `ファイルが無くなったので一覧から外す: ${L.name}`);
     dirty = true;
@@ -637,12 +644,19 @@ function render() {
   stageCtx.globalAlpha = 1;
   stageCtx.globalCompositeOperation = 'source-over';
 
+  // シークバーで過去の時点を見ているときは、その時の版で描く
+  const past = hist.open && hist.view != null;
   for (const L of state.layers) {
-    if (!shown(L)) continue;
-    const ts = tilesets.get(L.name);
-    if (!ts || !ts.w || !ts.levels.length) continue;
+    const src = past ? histSource(L) : null;
+    if (past ? !src : !shown(L)) continue;
     layerCtx.clearRect(0, 0, vw, vh);
-    drawLayer(layerCtx, L, ts);
+    if (src && src.bmp) {
+      drawPastLayer(layerCtx, L, src);
+    } else {
+      const ts = tilesets.get(L.name);
+      if (!ts || !ts.w || !ts.levels.length) continue;
+      drawLayer(layerCtx, L, ts);
+    }
     stageCtx.globalAlpha = clamp(L.opacity, 0, 1);
     stageCtx.globalCompositeOperation = L.blend;
     stageCtx.drawImage(layerCv, 0, 0, layerCv.width, layerCv.height, 0, 0, vw, vh);
@@ -651,7 +665,7 @@ function render() {
   stageCtx.globalCompositeOperation = 'source-over';
 
   if (v.alphaCheck) paintAlphaCheck();
-  else if (v.edge && state.edge.dim) {
+  else if (v.edge && state.edge.dim && !past) {
     // 絵のある所だけを暗くする（透明な所はそのまま）
     stageCtx.globalCompositeOperation = 'source-atop';
     stageCtx.fillStyle = 'rgba(0,0,0,.6)';
@@ -673,11 +687,16 @@ function render() {
     vctx.fillRect(x, y, w, h);
   }
 
-  // 縁取りは絵の下に敷き、薄い部分の色と内側の縁取りは絵の上に重ねる
-  const look = v.edge ? edgeJob.look : null;
+  // 縁取りは絵の下に敷き、薄い部分の色と内側の縁取りは絵の上に重ねる。
+  // 縁取りは今の絵から作ったものなので、過去の時点を見ているときは出さない
+  const look = v.edge && !past ? edgeJob.look : null;
   if (look && look.under) drawEdgeLook(look.under, look);
   vctx.drawImage(stageCv, 0, 0, stageCv.width, stageCv.height, 0, 0, vw, vh);
   if (look) drawEdgeLook(look.over, look);
+  // 過去の時点を見ているときは、今との違いを紫で重ねる
+  if (past && hist.diff && hist.diff.view === hist.view && hist.diff.any && $('#chkSeekDiff').checked) {
+    drawEdgeLook(hist.diff.cv, hist.diff);
+  }
 
   vctx.lineWidth = 1;
   vctx.strokeStyle = 'rgba(255,255,255,.35)';
@@ -838,7 +857,7 @@ function drawGuides(g, x, y, w, h, dw, dh) {
     }
     g.stroke();
   }
-  if (G.cut && cut.path) {
+  if (G.cut && cut.path && !(hist.open && hist.view != null)) {
     g.setLineDash([]);
     g.save();
     g.translate(v.panX, v.panY);
@@ -1422,6 +1441,512 @@ async function hoverTile(ts, c, r) {
   return bmp;
 }
 
+/* ------------------------------------------------------------------ */
+/* 履歴（シークバー）                                                    */
+/*   上書きされるたびに、その版をアプリのフォルダへ残す（設定の画質と、       */
+/*   動かしている間に使う小さな縮小版）。シークバーで過去の時点に戻して見る。  */
+/*   履歴の置き場所：%LOCALAPPDATA%\com.layerdeck.desktop\history\<ID>\     */
+/* ------------------------------------------------------------------ */
+const HIST_LONG = { light: 1500, std: 3000, full: 0 };   // 残す画質（長い辺 px。0 は原寸）
+const HIST_THUMB = 800;                                   // シークバーを動かしている間に使う縮小版
+const hist = {
+  settings: { quality: 'std', capMB: 2048, keepDays: 60 },
+  id: null,             // 作業フォルダのID（layerdeck.project.json に書く）
+  index: null,          // { version, id, dir, lastOpened, next, events: [...] }
+  writing: Promise.resolve(),   // 書き込みを順番に行う
+  open: false,          // シークバーを開いているか
+  view: null,           // 見ている目盛り（events の番号）。null は「今」
+  thumbs: new Map(),    // n -> ImageBitmap（縮小版）
+  fulls: new Map(),     // n -> ImageBitmap（設定の画質）
+  loadTimer: 0,
+  diff: null,           // 今との違いの重ね絵 { view, pad, W, H, S, cv, names }
+  diffSeq: 0, differ: null,
+};
+
+const newId = () => (crypto.randomUUID ? crypto.randomUUID()
+  : Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join(''));
+
+/** レイヤー name の、目盛り upto までで最後の出来事 */
+function histLatest(name, upto) {
+  const ev = hist.index ? hist.index.events : [];
+  const last = upto == null ? ev.length - 1 : upto;
+  for (let i = last; i >= 0; i--) if (ev[i].name === name) return ev[i];
+  return null;
+}
+
+/** この版を履歴に残す必要があるか（読み込みのついでに縮小版を作るかどうか） */
+function histJobOptions(name, ver) {
+  if (!hist.id) return null;
+  const e = hist.index && histLatest(name);
+  if (hist.index && e && !e.gone && e.ver === ver) return null;
+  return { long: HIST_LONG[hist.settings.quality] ?? 3000, thumb: HIST_THUMB };
+}
+
+/** 書き込みを1本の列に並べる（同時に index.json を書いて壊さないように） */
+function histQueue(fn) {
+  hist.writing = hist.writing.then(fn).catch((e) => log('error', '履歴: ' + (e.message || e)));
+  return hist.writing;
+}
+
+const histSaveIndex = () => histQueue(() => Backend.hist.write(`${hist.index.id}/index.json`, JSON.stringify(hist.index)));
+
+async function histLoad(id, dir) {
+  hist.id = id;
+  hist.index = null;
+  let idx = null;
+  try {
+    const buf = await Backend.hist.read(`${id}/index.json`);
+    if (buf) idx = JSON.parse(new TextDecoder().decode(buf));
+  } catch { idx = null; }
+  if (hist.id !== id) return;   // 読んでいる間に別のフォルダを開いた
+  if (!idx || !Array.isArray(idx.events)) idx = { version: 1, id, next: 1, events: [] };
+  idx.id = id; idx.dir = dir; idx.lastOpened = Date.now();
+  hist.index = idx;
+  histSaveIndex();
+  updateSeekbar();
+  histCleanup();   // 期間切れと容量の上限（裏で）
+}
+
+/** 読み込み（タイル作り）のついでに作った縮小版を、履歴に残す */
+async function histRecord(m) {
+  const H = hist.index;
+  if (!H || H.id !== hist.id) return;
+  const last = histLatest(m.name);
+  if (last && !last.gone && last.ver === m.ver) return;
+  const t = Number(String(m.ver).split('_')[0]) || Date.now();   // ファイルの更新日時＝保存した時刻
+  const ev = { t, name: m.name, ver: m.ver, w: m.w, h: m.h, qw: m.qw, qh: m.qh, tw: m.tw, th: m.th };
+  // 一度消えて同じ版が戻ってきたときは、前のファイルを使い回す
+  const same = H.events.find((e) => e.name === m.name && e.ver === m.ver && e.n != null);
+  if (same) {
+    Object.assign(ev, { n: same.n, qw: same.qw, qh: same.qh, tw: same.tw, th: same.th, bytes: 0 });
+  } else {
+    ev.n = H.next++;
+    ev.bytes = m.q.size + m.t.size;
+    await histQueue(async () => {
+      await Backend.hist.write(`${H.id}/${ev.n}.img`, m.q);
+      await Backend.hist.write(`${H.id}/${ev.n}_t.png`, m.t);
+    });
+  }
+  histInsert(ev);
+  histSaveIndex();
+  histEnforceCap();
+}
+
+/** ファイルが無くなったことも、目盛りとして残す（その時点から先は描かない） */
+function histGone(name) {
+  if (!hist.index) return;
+  const last = histLatest(name);
+  if (!last || last.gone) return;
+  histInsert({ t: Date.now(), name, gone: true });
+  histSaveIndex();
+}
+
+/**
+ * 気づいた順に後ろへ足す。時刻（t）は表示用で、並び順には使わない。
+ * 保存時刻で並べると、_old から戻したファイル（保存時刻が古い）が「消した」より前に回ってしまう。
+ */
+function histInsert(ev) {
+  hist.index.events.push(ev);
+  updateSeekbar();
+  if (hist.open && hist.view != null) histPrepare();
+}
+
+/** 期間を過ぎた作業フォルダの履歴を消し、容量の上限も守る */
+async function histCleanup() {
+  const days = hist.settings.keepDays;
+  if (days > 0) {
+    try {
+      for (const d of await Backend.hist.list()) {
+        if (d.id === hist.id) continue;
+        const buf = await Backend.hist.read(`${d.id}/index.json`);
+        let last = 0;
+        try { last = buf ? JSON.parse(new TextDecoder().decode(buf)).lastOpened || 0 : 0; } catch { last = 0; }
+        if (Date.now() - last > days * 86400000) {
+          await Backend.hist.remove(d.id);
+          log('info', `履歴を消した（${days}日以上開いていない）: ${d.id}`);
+        }
+      }
+    } catch (e) { log('error', '履歴の整理: ' + (e.message || e)); }
+  }
+  histEnforceCap();
+}
+
+let histCapRunning = false;
+/** 容量の上限を超えていたら、古い版から消す。各レイヤーのいちばん新しい版は残す */
+async function histEnforceCap() {
+  if (histCapRunning) return;
+  histCapRunning = true;
+  try {
+    const cap = hist.settings.capMB * MB;
+    const st = await Backend.hist.stats();
+    if (st.used <= cap) return;
+    // すべての作業フォルダの履歴から、消してよい版を古い順に並べる
+    const books = [];
+    for (const d of await Backend.hist.list()) {
+      let idx = d.id === hist.id ? hist.index : null;
+      if (!idx) {
+        const buf = await Backend.hist.read(`${d.id}/index.json`);
+        try { idx = buf ? JSON.parse(new TextDecoder().decode(buf)) : null; } catch { idx = null; }
+      }
+      if (idx && Array.isArray(idx.events)) books.push(idx);
+    }
+    const cands = [];
+    for (const B of books) {
+      const keep = new Set();
+      for (const name of new Set(B.events.map((e) => e.name))) {
+        const last = [...B.events].reverse().find((e) => e.name === name && !e.gone);
+        if (last) keep.add(last.n);
+      }
+      const seenN = new Map();
+      for (const e of B.events) {
+        if (e.n == null || keep.has(e.n)) continue;
+        const c = seenN.get(e.n);
+        if (!c) seenN.set(e.n, { B, n: e.n, t: e.t, bytes: e.bytes || 0 });
+        else c.bytes += e.bytes || 0;
+      }
+      cands.push(...seenN.values());
+    }
+    cands.sort((a, b) => a.t - b.t);
+    let over = st.used - cap * 0.9;
+    const touched = new Set();
+    for (const c of cands) {
+      if (over <= 0) break;
+      await Backend.hist.remove(`${c.B.id}/${c.n}.img`);
+      await Backend.hist.remove(`${c.B.id}/${c.n}_t.png`);
+      c.B.events = c.B.events.filter((e) => e.n !== c.n);
+      touched.add(c.B);
+      over -= c.bytes;
+    }
+    for (const B of touched) {
+      if (B === hist.index) { hist.view = null; histSaveIndex(); updateSeekbar(); }
+      else await Backend.hist.write(`${B.id}/index.json`, JSON.stringify(B));
+    }
+    if (touched.size) log('info', `履歴が上限（${hist.settings.capMB}MB）を超えたので古い版を消した`);
+  } catch (e) {
+    log('error', '履歴の容量の整理: ' + (e.message || e));
+  } finally {
+    histCapRunning = false;
+  }
+}
+
+/** 履歴を消す。今の作業フォルダの、各レイヤーのいちばん新しい版だけ残す */
+async function histClear() {
+  for (const d of await Backend.hist.list()) {
+    if (d.id !== hist.id) await Backend.hist.remove(d.id);
+  }
+  const H = hist.index;
+  if (H) {
+    const keep = [];
+    for (const name of new Set(H.events.map((e) => e.name))) {
+      const last = [...H.events].reverse().find((e) => e.name === name);
+      if (last && !last.gone) keep.push(last);
+    }
+    const keepN = new Set(keep.map((e) => e.n));
+    for (const n of new Set(H.events.map((e) => e.n))) {
+      if (n != null && !keepN.has(n)) {
+        await Backend.hist.remove(`${H.id}/${n}.img`);
+        await Backend.hist.remove(`${H.id}/${n}_t.png`);
+      }
+    }
+    H.events = H.events.filter((e) => keep.includes(e));
+    hist.view = null;
+    histRelease();
+    histSaveIndex();
+    updateSeekbar();
+  }
+  log('info', '履歴を消した（今の版は残した）');
+}
+
+/* ---------- シークバーの表示と操作 ---------- */
+const layerHues = new Map();
+/** レイヤーごとの目盛りの色（名前から決める。毎回同じ色になる） */
+function layerColor(name) {
+  if (!layerHues.has(name)) {
+    let h = 0;
+    for (const c of name) h = (h * 31 + c.codePointAt(0)) >>> 0;
+    layerHues.set(name, h % 360);
+  }
+  return `hsl(${layerHues.get(name)} 72% 64%)`;
+}
+
+const fmtTime = (t) => {
+  const d = new Date(t);
+  return `${d.getMonth() + 1}/${d.getDate()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+};
+const histDescribe = (e) => `${fmtTime(e.t)}　${displayName(e.name)} を${e.gone ? '消した' : '保存'}`;
+
+function openSeekbar(open) {
+  hist.open = open;
+  $('#seekbar').hidden = !open;
+  $('#btnHist').classList.toggle('on', open);
+  if (!open) { hist.view = null; histRelease(); }
+  updateSeekbar();
+  requestRender();
+}
+
+/** 見ている時点で、今と版が違うレイヤー */
+function histChangedNames(view) {
+  const out = [];
+  for (const L of state.layers) {
+    const a = histLatest(L.name, view), b = histLatest(L.name);
+    const na = a && !a.gone ? a.n : null, nb = b && !b.gone ? b.n : null;
+    if (na !== nb) out.push(L.name);
+  }
+  return out;
+}
+
+function updateSeekbar() {
+  if (!hist.open) return;
+  drawSeekTrack();
+  const E = hist.index ? hist.index.events : [];
+  const lab = $('#seekLabel'), note = $('#seekNote');
+  if (!E.length) {
+    lab.textContent = 'まだ履歴がありません。PNG を上書きすると、そのたびに記録されます';
+    note.textContent = '';
+    return;
+  }
+  if (hist.view == null) {
+    lab.innerHTML = `<b>今</b>　最後の保存：${escapeHtml(histDescribe(E[E.length - 1]))}`;
+    note.textContent = '';
+  } else {
+    lab.innerHTML = `<b>${E.length - 1 - hist.view}つ前</b>　${escapeHtml(histDescribe(E[hist.view]))}`;
+    const names = histChangedNames(hist.view);
+    note.textContent = names.length ? `今と違うレイヤー：${names.map(displayName).join('・')}` : '今と同じ絵です';
+  }
+}
+
+function drawSeekTrack() {
+  const cv = $('#seekTrack');
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (!w || !h) return;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const E = hist.index ? hist.index.events : [];
+  const P = SEEK_PAD, mid = h / 2 + 5;
+  g.strokeStyle = 'rgba(255,255,255,.18)'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(P, mid); g.lineTo(w - P, mid); g.stroke();
+  if (!E.length) return;
+  const x = (i) => seekX(i, E.length, w);
+  // 日付が変わる所に日付を出す（詰まる所は飛ばす）
+  g.font = '10px "Yu Gothic UI", Meiryo, sans-serif';
+  g.fillStyle = 'rgba(255,255,255,.5)';
+  let lastDay = '', lastX = -1e9;
+  E.forEach((e, i) => {
+    const d = new Date(e.t), day = `${d.getMonth() + 1}/${d.getDate()}`;
+    if (day !== lastDay && x(i) - lastX > 36) { g.fillText(day, Math.max(0, x(i) - 10), 10); lastX = x(i); }
+    lastDay = day;
+  });
+  // 目盛り（レイヤーごとの色。消した所は薄く）
+  g.lineWidth = 2;
+  E.forEach((e, i) => {
+    g.globalAlpha = e.gone ? 0.4 : 1;
+    g.strokeStyle = layerColor(e.name);
+    g.beginPath(); g.moveTo(x(i), mid - 8); g.lineTo(x(i), mid + 8); g.stroke();
+  });
+  g.globalAlpha = 1;
+  // 見ている位置
+  const cur = hist.view == null ? E.length - 1 : hist.view;
+  g.fillStyle = '#fff'; g.strokeStyle = '#0e0f12'; g.lineWidth = 2;
+  g.beginPath(); g.arc(x(cur), mid, 6, 0, Math.PI * 2); g.fill(); g.stroke();
+}
+
+const SEEK_PAD = 12;
+const seekX = (i, n, w) => (n <= 1 ? w - SEEK_PAD : SEEK_PAD + i / (n - 1) * (w - 2 * SEEK_PAD));
+
+function setHistView(i) {
+  const E = hist.index ? hist.index.events : [];
+  hist.view = i == null || !E.length || i >= E.length - 1 ? null : Math.max(0, i);
+  updateSeekbar();
+  histPrepare();
+  requestRender();
+}
+
+function initSeekbar() {
+  $('#btnHist').addEventListener('click', () => openSeekbar(!hist.open));
+  $('#btnSeekNow').addEventListener('click', () => setHistView(null));
+  $('#btnSeekClose').addEventListener('click', () => openSeekbar(false));
+  $('#chkSeekDiff').addEventListener('change', () => { histScheduleDiff(); requestRender(); });
+  const cv = $('#seekTrack'), tip = $('#seekTip');
+  const idxAt = (clientX) => {
+    const n = hist.index ? hist.index.events.length : 0;
+    const r = cv.getBoundingClientRect();
+    const f = (clientX - r.left - SEEK_PAD) / Math.max(1, r.width - 2 * SEEK_PAD);
+    return clamp(Math.round(f * (n - 1)), 0, Math.max(0, n - 1));
+  };
+  let drag = false;
+  cv.addEventListener('pointerdown', (e) => {
+    if (!hist.index || !hist.index.events.length) return;
+    drag = true;
+    try { cv.setPointerCapture(e.pointerId); } catch { /* なくても動く */ }
+    setHistView(idxAt(e.clientX));
+  });
+  cv.addEventListener('pointermove', (e) => {
+    const E = hist.index ? hist.index.events : [];
+    if (!E.length) return;
+    const i = idxAt(e.clientX);
+    if (drag && i !== (hist.view == null ? E.length - 1 : hist.view)) setHistView(i);
+    // 目盛りの説明をカーソルの上に出す
+    tip.textContent = histDescribe(E[i]) + (i === E.length - 1 ? '（今）' : '');
+    tip.hidden = false;
+    const r = cv.getBoundingClientRect(), box = $('#seekbar').getBoundingClientRect();
+    const x = seekX(i, E.length, r.width) + r.left - box.left;
+    tip.style.left = `${clamp(x - tip.offsetWidth / 2, 0, box.width - tip.offsetWidth)}px`;
+  });
+  const up = () => { drag = false; };
+  cv.addEventListener('pointerup', up);
+  cv.addEventListener('pointercancel', up);
+  cv.addEventListener('pointerleave', () => { tip.hidden = true; });
+  new ResizeObserver(() => drawSeekTrack()).observe(cv);
+}
+
+/* ---------- 過去の版の読み込み（まず縮小版、手を止めたら設定の画質） ---------- */
+/** 見ている時点で、今のタイルでは描けないレイヤーの版（n -> 出来事） */
+function histNeeded() {
+  const need = new Map();
+  if (!hist.open || hist.view == null) return need;
+  for (const L of state.layers) {
+    const e = histLatest(L.name, hist.view);
+    if (!e || e.gone) continue;
+    const ts = tilesets.get(L.name);
+    if (!(ts && ts.ver === e.ver && !L.missing)) need.set(e.n, e);
+  }
+  return need;
+}
+
+function histPrepare() {
+  const need = histNeeded();
+  // 要らなくなったものは手放す（シークバーを動かしても、持つのは見ている時点の分だけ）
+  for (const [n, b] of hist.thumbs) if (!need.has(n)) { b.close(); hist.thumbs.delete(n); }
+  for (const [n, b] of hist.fulls) if (!need.has(n)) { b.close(); hist.fulls.delete(n); }
+  if (hist.diff && hist.diff.view !== hist.view) hist.diff = null;
+  for (const n of need.keys()) if (!hist.thumbs.has(n)) histLoadImage(n, true);
+  clearTimeout(hist.loadTimer);
+  hist.loadTimer = setTimeout(async () => {
+    await Promise.all([...need.keys()].filter((n) => !hist.fulls.has(n)).map((n) => histLoadImage(n, false)));
+    histScheduleDiff();
+  }, 250);
+}
+
+const histLoading = new Set();
+async function histLoadImage(n, thumb) {
+  const key = (thumb ? 't' : 'f') + n;
+  if (histLoading.has(key)) return;
+  histLoading.add(key);
+  try {
+    const buf = await Backend.hist.read(`${hist.id}/${n}${thumb ? '_t.png' : '.img'}`);
+    if (!buf) return;
+    const bmp = await createImageBitmap(new Blob([buf]));
+    const map = thumb ? hist.thumbs : hist.fulls;
+    if (!histNeeded().has(n) || map.has(n)) { bmp.close(); return; }   // もう要らない
+    map.set(n, bmp);
+    requestRender();
+  } catch (e) {
+    log('error', '履歴の画像を読めません: ' + (e.message || e));
+  } finally {
+    histLoading.delete(key);
+  }
+}
+
+function histRelease() {
+  for (const b of hist.thumbs.values()) b.close();
+  for (const b of hist.fulls.values()) b.close();
+  hist.thumbs.clear(); hist.fulls.clear();
+  hist.diff = null;
+  hist.diffSeq++;
+}
+
+/** 過去の時点で、そのレイヤーをどう描くか。null は描かない */
+function histSource(L) {
+  if (!(solo.size ? solo.has(L.name) : L.visible)) return null;   // 表示の切り替えは今の設定に従う
+  const e = histLatest(L.name, hist.view);
+  if (!e || e.gone) return null;                                   // その時点では無かった
+  const ts = tilesets.get(L.name);
+  if (ts && ts.ver === e.ver && !L.missing) return { now: true };  // 今と同じ版は、今のタイルで描く
+  const bmp = hist.fulls.get(e.n) || hist.thumbs.get(e.n);
+  return bmp ? { bmp, e } : null;                                  // 読み込み待ち
+}
+
+function drawPastLayer(g, L, src) {
+  const v = state.view, e = src.e;
+  const W = e.w * L.scale * v.zoom, H = e.h * L.scale * v.zoom;
+  const X = v.panX + L.x * v.zoom, Y = v.panY + L.y * v.zoom;
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+  if (L.flipH) {
+    g.save(); g.translate(X + W, Y); g.scale(-1, 1);
+    g.drawImage(src.bmp, 0, 0, W, H);
+    g.restore();
+  } else {
+    g.drawImage(src.bmp, X, Y, W, H);
+  }
+}
+
+/* ---------- 今との違い ---------- */
+function histScheduleDiff() {
+  if (!hist.open || hist.view == null || !$('#chkSeekDiff').checked) return;
+  if (hist.diff && hist.diff.view === hist.view) return;
+  histComputeDiff().catch((e) => log('error', '今との違い: ' + (e.message || e)));
+}
+
+async function histComputeDiff() {
+  const view = hist.view, seq = ++hist.diffSeq;
+  const { w: dw, h: dh } = docSize();
+  if (!dw) return;
+  const S = Math.max(1, Math.round(Math.max(dw, dh) / 1500));
+  const read = async (e) => {
+    if (!e) return null;
+    const buf = await Backend.hist.read(`${hist.id}/${e.n}.img`);
+    return buf ? new Blob([buf]) : null;
+  };
+  const pairs = [];
+  for (const L of state.layers) {
+    if (!(solo.size ? solo.has(L.name) : L.visible)) continue;
+    const a = histLatest(L.name, view), b = histLatest(L.name);
+    const pa = a && !a.gone ? a : null, pb = b && !b.gone ? b : null;
+    if ((pa ? pa.n : null) === (pb ? pb.n : null)) continue;   // 同じ版
+    const g = pb || pa;
+    pairs.push({ a: await read(pa), b: await read(pb), w: g.w, h: g.h, x: L.x, y: L.y, scale: L.scale, flipH: L.flipH });
+    if (seq !== hist.diffSeq) return;
+  }
+  if (!hist.differ) hist.differ = new Worker('differ.js');
+  const res = await new Promise((resolve) => {
+    hist.differ.onmessage = (e) => { if (e.data.id === seq) resolve(e.data); };
+    hist.differ.onerror = (e) => resolve({ error: e.message || '作業用のスクリプト（differ.js）を読み込めませんでした' });
+    hist.differ.postMessage({ id: seq, dw, dh, S, pairs });
+  });
+  if (res.error) { log('error', '今との違い: ' + res.error); return; }
+  if (seq !== hist.diffSeq || hist.view !== view) return;
+  hist.diff = buildDiffLook(res, view);
+  requestRender();
+}
+
+/** 違うマスを 1.5mm ふくらませて、紫でうっすら塗る（小さな違いも見えるように） */
+function buildDiffLook(res, view) {
+  const { S, cw, ch, mask } = res;
+  const r = 1.5 / 25.4 * state.dpi / S;
+  const pad = Math.ceil(r) + 1, W = cw + 2 * pad, H = ch + 2 * pad;
+  const m = new Uint8Array(W * H);
+  let any = false;
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) if (mask[y * cw + x]) { m[(y + pad) * W + x + pad] = 1; any = true; }
+  }
+  const img = new ImageData(W, H);
+  if (any) {
+    const d = distanceField(m, W, H);
+    for (let i = 0; i < W * H; i++) {
+      if (d[i] > r) continue;
+      const p = i * 4;
+      img.data[p] = 205; img.data[p + 1] = 80; img.data[p + 2] = 255;
+      img.data[p + 3] = m[i] ? 115 : 60;
+    }
+  }
+  return { view, pad, W, H, S, cv: toCanvas(img), any };
+}
+
 const hexRgb = (hex) => {
   const n = parseInt(String(hex).replace('#', ''), 16) || 0;
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
@@ -1515,6 +2040,13 @@ function initViewEvents() {
     if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const k = e.key.toLowerCase();
+    if (hist.open && hist.index && hist.index.events.length &&
+        (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End')) {
+      const n = hist.index.events.length, cur = hist.view == null ? n - 1 : hist.view;
+      setHistView(e.key === 'Home' ? 0 : e.key === 'End' ? null : cur + (e.key === 'ArrowLeft' ? -1 : 1));
+      e.preventDefault();
+      return;
+    }
     if (k === 'f') fit();
     else if (k === '1') actualSize();
     else if (k === 'h') toggleView('flipH', '#btnFlip');
@@ -1776,6 +2308,7 @@ async function saveProject() {
   if (!state.dir) return;
   const data = {
     version: 3,
+    id: hist.id,
     paper: state.paper, customW: state.customW, customH: state.customH,
     dpi: state.dpi, dpiSource: state.dpiSource,
     bleed: state.bleed, cutMargin: state.cutMargin, artPct: state.artPct,
@@ -1800,6 +2333,7 @@ async function saveProject() {
 
 function applyProject(p) {
   if (!p) return;
+  if (typeof p.id === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(p.id)) hist.id = p.id;
   if (PAPERS.some((x) => x.key === p.paper)) state.paper = p.paper;
   if (p.customW > 0) state.customW = p.customW;
   if (p.customH > 0) state.customH = p.customH;
@@ -1842,6 +2376,12 @@ async function loadAppSettings() {
     const s = await Backend.loadSettings();
     if (s && s.edge) applyEdgeSettings(s.edge);
     if (s && s.layout) { setSideWidth(s.layout.sideW); setFootHeight(s.layout.footH); }
+    if (s && s.history) {
+      const h = s.history, H = hist.settings;
+      if (h.quality in HIST_LONG) H.quality = h.quality;
+      if (Number.isFinite(h.capMB) && h.capMB >= 100) H.capMB = h.capMB;
+      if (Number.isFinite(h.keepDays) && h.keepDays >= 0) H.keepDays = h.keepDays;
+    }
   } catch (e) {
     log('error', 'アプリの設定を読めません: ' + (e.message || e));
   }
@@ -1861,7 +2401,7 @@ function scheduleAppSave() {
   clearTimeout(appSaveTimer);
   appSaveTimer = setTimeout(async () => {
     try {
-      await Backend.saveSettings({ version: 1, edge: state.edge, layout });
+      await Backend.saveSettings({ version: 1, edge: state.edge, layout, history: hist.settings });
     } catch (e) {
       log('error', 'アプリの設定を保存できません: ' + (e.message || e));
     }
@@ -1915,6 +2455,19 @@ function initResizers() {
   });
 }
 
+async function showHistUsage() {
+  const box = $('#histUsage');
+  try {
+    const st = await Backend.hist.stats();
+    const mb = (b) => (b / MB).toFixed(b < 10 * MB ? 1 : 0);
+    const cap = hist.settings.capMB;
+    box.textContent = `いま ${mb(st.used)}MB を使っています（上限 ${cap >= 1024 ? cap / 1024 + 'GB' : cap + 'MB'}）` +
+      (st.free != null ? `。ディスクの空き ${(st.free / 1024 / MB).toFixed(1)}GB` : '');
+  } catch {
+    box.textContent = '';
+  }
+}
+
 function syncUiFromState() {
   $('#selPaper').value = state.paper;
   $('#customPaper').hidden = state.paper !== 'custom';
@@ -1933,6 +2486,9 @@ function syncUiFromState() {
   $('#inEdgeColor').value = state.edge.color;
   $('#inEdgeFaintColor').value = state.edge.faintColor;
   $('#chkEdgeDim').checked = state.edge.dim;
+  $('#selHistQuality').value = hist.settings.quality;
+  $('#selHistCap').value = String(hist.settings.capMB);
+  $('#selHistDays').value = String(hist.settings.keepDays);
   syncViewButtons();
   updateSpec();
   updateCutInfo();
@@ -2199,7 +2755,13 @@ function adoptDir(j) {
   edgeJob.map = null; edgeJob.look = null; edgeJob.running = false; edgeJob.waiting = false;
   $('#tooMany').classList.add('hide');
   state.layers = [];
+  hist.id = null;
   applyProject(j.project);
+  // 履歴は作業フォルダのIDで結びつける（フォルダを移動したり名前を変えたりしても続く）
+  if (!hist.id) { hist.id = newId(); scheduleSave(); }
+  hist.view = null;
+  histRelease();
+  histLoad(hist.id, j.dir);
   if (j.mem) { mem = j.mem; budget = clamp(Math.round(mem.avail * 0.25), 96 * MB, 1536 * MB); }
   state.view.fitted = false;
   renderLayers(); requestRender();
@@ -2258,7 +2820,31 @@ function initUi() {
   $('#btnAboutClose').addEventListener('click', closeModals);
   $('#btnHelpClose').addEventListener('click', closeModals);
   $('#btnSettingsClose').addEventListener('click', closeModals);
-  $('#btnSettings').addEventListener('click', () => { closePops(); $('#settingsModal').hidden = false; });
+  $('#btnSettings').addEventListener('click', () => { closePops(); $('#settingsModal').hidden = false; showHistUsage(); });
+  $('#selHistQuality').addEventListener('change', (e) => { hist.settings.quality = e.target.value; scheduleAppSave(); });
+  $('#selHistCap').addEventListener('change', (e) => {
+    hist.settings.capMB = Number(e.target.value); scheduleAppSave();
+    histEnforceCap().then(showHistUsage);
+  });
+  $('#selHistDays').addEventListener('change', (e) => {
+    hist.settings.keepDays = Number(e.target.value); scheduleAppSave();
+    histCleanup().then(showHistUsage);
+  });
+  // 消すボタンは2回押し（うっかり押しても消えないように）
+  let clearArmed = 0;
+  $('#btnHistClear').addEventListener('click', async (e) => {
+    const b = e.target;
+    if (!clearArmed) {
+      b.textContent = 'もう一度押すと消す';
+      clearArmed = setTimeout(() => { clearArmed = 0; b.textContent = '消す'; }, 4000);
+      return;
+    }
+    clearTimeout(clearArmed); clearArmed = 0;
+    b.disabled = true; b.textContent = '消しています…';
+    try { await histClear(); } catch (err) { log('error', '履歴を消せません: ' + (err.message || err)); }
+    b.disabled = false; b.textContent = '消す';
+    showHistUsage();
+  });
   $('#btnLayoutReset').addEventListener('click', () => { setSideWidth(null); setFootHeight(null); scheduleAppSave(); });
 
   // ？ メニュー（使い方・ログ・LayerDeck について）
@@ -2366,6 +2952,7 @@ function initUi() {
 
   initViewEvents();
   initResizers();
+  initSeekbar();
 }
 
 window.addEventListener('error', (e) =>
