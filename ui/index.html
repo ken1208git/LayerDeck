@@ -14,9 +14,10 @@
   <div id="dirLabel" class="dir" title="作業フォルダ">未選択</div>
   <button id="btnReveal" class="btn icon" data-icon="folder" title="エクスプローラーで開く"></button>
   <div class="sp"></div>
-  <button id="btnExport" class="btn">書き出し…</button>
   <div id="status" class="status"></div>
-  <button id="btnMenu" class="btn icon" data-icon="menu" title="メニュー" aria-haspopup="true"></button>
+  <button id="btnExport" class="btn icon" data-icon="export" title="書き出し（確認用の合成PNG。納品には使わない）"></button>
+  <button id="btnSettings" class="btn icon" data-icon="settings" title="設定"></button>
+  <button id="btnHelp" class="btn icon" data-icon="help" title="ヘルプ" aria-haspopup="true"></button>
 </header>
 <div id="menu" class="menu" hidden>
   <button data-act="help">使い方とショートカット</button>
@@ -194,6 +195,26 @@
       <button class="btn" id="btnExportReveal" hidden>フォルダで表示</button>
       <button class="btn" id="btnExportClose">キャンセル</button>
       <button class="btn primary" id="btnExportGo">書き出す</button>
+    </div>
+  </div>
+</div>
+
+<div id="settingsModal" class="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal-head" id="settingsTitle">設定</div>
+    <div class="modal-body">
+      <div class="set-group">
+        <div class="set-title">画面</div>
+        <div class="set-row">
+          <span>右の列の幅と、「用紙・解像度」欄の高さ</span>
+          <button class="btn tiny" id="btnLayoutReset">元に戻す</button>
+        </div>
+        <div class="note">境目のドラッグで変えた大きさを、最初の大きさに戻します</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <div class="status"></div>
+      <button class="btn primary" id="btnSettingsClose">閉じる</button>
     </div>
   </div>
 </div>

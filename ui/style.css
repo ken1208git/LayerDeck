@@ -115,7 +115,11 @@ main{display:flex; height:calc(100% - var(--bar-h))}
 }
 .pop[hidden]{display:none}
 .pop-title{font-weight:600; font-size:12px; color:var(--fg); margin-bottom:4px}
-/* ☰ のメニュー */
+/* 設定の画面 */
+.set-group{padding:2px 0 10px}
+.set-title{font-size:12px; font-weight:600; color:var(--fg); margin-bottom:6px}
+.set-row{display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:12px; color:var(--fg2)}
+/* ？ のメニュー */
 .menu{
   position:fixed; top:calc(var(--bar-h) - 4px); right:8px; z-index:60; min-width:210px;
   background:var(--bg2); border:1px solid var(--line); border-radius:8px; padding:4px;

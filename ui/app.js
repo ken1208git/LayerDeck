@@ -63,7 +63,9 @@ const ICON = {
   guide: svg('<rect x="4" y="4" width="16" height="16" rx="1" stroke-dasharray="3 3"/><path d="M12 7v10M7 12h10" stroke-width="1.5"/>'),
   bg: svg('<rect x="4" y="4" width="16" height="16" rx="1.5"/><path d="M4 12h8V4M12 20v-8h8" fill="currentColor" stroke="none" opacity=".55"/>'),
   folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
-  menu: svg('<path d="M4 7h16M4 12h16M4 17h16"/>'),
+  export: svg('<path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 13v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/>'),
+  settings: svg('<path d="M10.2 2.6 L13.8 2.6 L14.1 5.2 L15.3 5.7 L17.4 4.0 L20.0 6.6 L18.3 8.7 L18.8 9.9 L21.4 10.2 L21.4 13.8 L18.8 14.1 L18.3 15.3 L20.0 17.4 L17.4 20.0 L15.3 18.3 L14.1 18.8 L13.8 21.4 L10.2 21.4 L9.9 18.8 L8.7 18.3 L6.6 20.0 L4.0 17.4 L5.7 15.3 L5.2 14.1 L2.6 13.8 L2.6 10.2 L5.2 9.9 L5.7 8.7 L4.0 6.6 L6.6 4.0 L8.7 5.7 L9.9 5.2Z"/><circle cx="12" cy="12" r="2.8"/>'),
+  help: svg('<circle cx="12" cy="12" r="9"/><path d="M9.4 9.3a2.7 2.7 0 0 1 5.2.9c0 1.8-2.6 2.2-2.6 4"/><circle cx="12" cy="17.3" r=".6" fill="currentColor"/>'),
   caret: svg('<path d="M7 10l5 5 5-5"/>', 'stroke-width="2.4"'),
   eye: svg('<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/>'),
   eyeOff: svg('<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z" opacity=".35"/><path d="M4 4l16 16"/>'),
@@ -2110,7 +2112,7 @@ function openExportDialog() {
   $('#btnExportGo').focus();
 }
 
-/** ▾ の小窓と ☰ のメニューを閉じる。開いているものがあれば true */
+/** ▾ の小窓と ？ のメニューを閉じる。開いているものがあれば true */
 function closePops() {
   let any = false;
   for (const el of document.querySelectorAll('.pop, .menu')) {
@@ -2255,10 +2257,13 @@ function initUi() {
   $('#btnExportReveal').addEventListener('click', () => Backend.reveal('export').catch(() => {}));
   $('#btnAboutClose').addEventListener('click', closeModals);
   $('#btnHelpClose').addEventListener('click', closeModals);
+  $('#btnSettingsClose').addEventListener('click', closeModals);
+  $('#btnSettings').addEventListener('click', () => { closePops(); $('#settingsModal').hidden = false; });
+  $('#btnLayoutReset').addEventListener('click', () => { setSideWidth(null); setFootHeight(null); scheduleAppSave(); });
 
-  // ☰ メニュー（使い方・ログ・LayerDeck について）
+  // ？ メニュー（使い方・ログ・LayerDeck について）
   const menu = $('#menu');
-  $('#btnMenu').addEventListener('click', () => {
+  $('#btnHelp').addEventListener('click', () => {
     const open = menu.hidden;
     closePops();
     menu.hidden = !open;
@@ -2283,7 +2288,7 @@ function initUi() {
   pop('#btnGuideOpts', '#guidePop');
   // 外をクリックしたら閉じる
   document.addEventListener('pointerdown', (e) => {
-    if (!e.target.closest('.pop, .menu, #btnMenu, .caret')) closePops();
+    if (!e.target.closest('.pop, .menu, #btnHelp, .caret')) closePops();
   });
   $('#btnLicenses').addEventListener('click', showLicenses);
   $('#btnLog').addEventListener('click', () => Backend.reveal('log').catch(() => {}));
