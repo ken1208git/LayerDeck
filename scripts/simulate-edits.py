@@ -1,4 +1,4 @@
-"""履歴（シークバー）を試すための、作業の再現スクリプト
+"""履歴（シークバー）と参考画像を試すための、作業の再現スクリプト
 
 パーツPNGを作業フォルダに置き、数秒おきに「キャラを動かす」「ゴミを付ける」「色を変える」
 「1枚消してまた戻す」といった修正を順に上書きしていく。LayerDeck を開いたまま実行すると、
@@ -57,12 +57,29 @@ def ellipse(img, cx, cy, rx, ry, rgba):
         span(img, y, cx - dx, cx + dx + 1, rgba)
 
 
+def ring(img, cx, cy, rx, ry, t, rgba):
+    """楕円の輪郭だけ（太さ t）"""
+    for y in range(cy - ry, cy + ry + 1):
+        k = 1 - ((y - cy) / ry) ** 2
+        if k < 0:
+            continue
+        dx = int(rx * math.sqrt(k))
+        ki = 1 - ((y - cy) / max(1, ry - t)) ** 2 if abs(y - cy) < ry - t else -1
+        di = int((rx - t) * math.sqrt(ki)) if ki >= 0 else -1
+        if di < 0:
+            span(img, y, cx - dx, cx + dx + 1, rgba)
+        else:
+            span(img, y, cx - dx, cx - di, rgba)
+            span(img, y, cx + di, cx + dx + 1, rgba)
+
+
 def save(img, path: Path, mtime: float):
     def chunk(t, d):
         return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
     ppm = round(DPI / 0.0254)
+    h, w = len(img), len(img[0]) // 4   # 画像そのものの大きさ（ラフは本体より小さい）
     raw = b''.join(b'\0' + bytes(r) for r in img)
-    data = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', W, H, 8, 6, 0, 0, 0))
+    data = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0))
             + chunk(b'pHYs', struct.pack('>IIB', ppm, ppm, 1))
             + chunk(b'IDAT', zlib.compress(raw, 1)) + chunk(b'IEND', b''))
     # 書きかけを読まれないよう、一時ファイルに書いてから差し替える
@@ -103,6 +120,25 @@ def prop(x=1800, color=(240, 200, 40, 255)):
     return img
 
 
+def rough():
+    """参考画像を試すためのラフ。白地に線だけ。わざと元の絵の 2/3 の大きさにする"""
+    global W, H
+    W0, H0 = W, H
+    W, H = W0 * 2 // 3, H0 * 2 // 3
+    try:
+        img = [bytearray(b'\xff\xff\xff\xff' * W) for _ in range(H)]
+        k = 2 / 3
+        line = (60, 60, 70, 255)
+        rect(img, 0, int(H0 * 0.72 * k), W, 3, line)                                       # 地面
+        ring(img, int(1050 * k), int(1000 * k), int(170 * k), int(330 * k), 4, line)      # 体（今の位置）
+        ring(img, int(1050 * k), int(590 * k), int(120 * k), int(120 * k), 4, line)       # 顔
+        ring(img, int(1950 * k), int(900 * k), int(140 * k), int(140 * k), 4, line)       # 小物
+        rect(img, int(1950 * k) - 2, int(1040 * k), 4, int(300 * k), line)
+        return img
+    finally:
+        W, H = W0, H0
+
+
 # (説明, [(ファイル名, 絵 または None=消す)])
 STEPS = [
     ('最初の3枚', [('01_背景.png', lambda: background()),
@@ -133,6 +169,13 @@ def main():
 
     # 3日前から、3時間ずつ進んだ日時として記録する
     base = time.time() - 3 * 24 * 3600
+
+    # 参考画像を試すためのラフ（下の階層なので、パーツとしては読まれない）
+    rd = d / '_ラフ'
+    rd.mkdir(exist_ok=True)
+    save(rough(), rd / 'ラフ.png', base - 24 * 3600)
+    print(f'参考画像用のラフ：{rd / "ラフ.png"}', flush=True)
+
     for i, (label, files) in enumerate(STEPS):
         mtime = base + i * 3 * 3600 + (i * 7 % 50) * 60
         stamp = time.strftime('%m/%d %H:%M', time.localtime(mtime))

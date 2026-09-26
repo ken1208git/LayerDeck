@@ -242,6 +242,16 @@ code{background:var(--bg3); padding:1px 4px; border-radius:3px; font-size:11px}
 .row.hidden-layer .name, .row.hidden-layer .thumb{opacity:.4}
 
 .row-main{display:flex; align-items:center; gap:6px}
+/* 参考画像の枠（レイヤー一覧の上）。レイヤーではないので点線で区別する */
+.ref-slot{padding:6px 6px 0}
+.ref-empty{display:flex; align-items:center; gap:8px; padding:2px 2px 4px}
+.ref-hint{font-size:11px; color:var(--fg2)}
+.ref-set{
+  border:1px dashed #7a6630; border-radius:7px; padding:6px;
+  background:rgba(224,163,58,.06);
+}
+.ref-set[hidden], .ref-empty[hidden]{display:none}
+.ref-set .sub.bad{color:var(--warn)}
 .grip{cursor:grab; color:#5c626d; padding:0 1px; display:flex}
 .grip:hover{color:var(--fg2)}
 .eye{

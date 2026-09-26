@@ -155,6 +155,29 @@
         <button class="btn tiny" id="btnAllOn" title="すべて表示">全表示</button>
       </div>
     </div>
+    <div id="refSlot" class="ref-slot">
+      <div id="refEmpty" class="ref-empty">
+        <button class="btn tiny" id="btnRefPick">参考画像を選ぶ…</button>
+        <span class="ref-hint">ラフなどを上に重ねて見比べる</span>
+      </div>
+      <div id="refSet" class="ref-set" hidden>
+        <div class="row-main">
+          <button class="eye on" id="refEye" title="表示／非表示 (R)"></button>
+          <div class="thumb" id="refThumb"></div>
+          <div class="meta">
+            <div class="name" id="refName"></div>
+            <div class="sub" id="refSub"></div>
+          </div>
+          <button class="gear" id="btnRefChange" data-icon="swap" title="別の画像に替える"></button>
+          <button class="gear" id="btnRefClear" data-icon="close" title="参考画像を外す"></button>
+        </div>
+        <div class="row-ctl">
+          <select id="refBlend"></select>
+          <input type="range" id="refOpacity" min="0" max="100" step="1">
+          <span class="opv" id="refOpv"></span>
+        </div>
+      </div>
+    </div>
     <div id="layers" class="layers"></div>
     <div id="footResizer" class="resizer resizer-h" title="ドラッグで高さを変える（ダブルクリックで元に戻す）"></div>
 
@@ -279,7 +302,7 @@
         <li><b>F</b> 全体表示 ／ <b>1</b> 実寸（100%）</li>
         <li><b>H</b> 左右反転 ／ <b>G</b> 明度チェック ／ <b>T</b> 透明チェック</li>
         <li><b>E</b> 縁取り表示（ゴミ探し・切り抜きのふちの確認）。縁取りにカーソルを乗せると、どのレイヤーの色かが出ます</li>
-        <li><b>B</b> 背景の切り替え</li>
+        <li><b>B</b> 背景の切り替え ／ <b>R</b> 参考画像の表示／非表示</li>
         <li>縁取り表示とガイドの設定は、右上のボタンの横の <b>▾</b> から</li>
         <li><b>時計のボタン</b> 履歴のシークバー。上書きのたびに記録された過去の版に戻して見られます（<b>← →</b> で1つずつ）</li>
         <li>右の列の幅と、レイヤー一覧と「用紙・解像度」の境目は、<b>ドラッグ</b>で変えられます（<b>ダブルクリック</b>で元に戻る）</li>

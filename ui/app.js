@@ -67,6 +67,8 @@ const ICON = {
   settings: svg('<path d="M10.2 2.6 L13.8 2.6 L14.1 5.2 L15.3 5.7 L17.4 4.0 L20.0 6.6 L18.3 8.7 L18.8 9.9 L21.4 10.2 L21.4 13.8 L18.8 14.1 L18.3 15.3 L20.0 17.4 L17.4 20.0 L15.3 18.3 L14.1 18.8 L13.8 21.4 L10.2 21.4 L9.9 18.8 L8.7 18.3 L6.6 20.0 L4.0 17.4 L5.7 15.3 L5.2 14.1 L2.6 13.8 L2.6 10.2 L5.2 9.9 L5.7 8.7 L4.0 6.6 L6.6 4.0 L8.7 5.7 L9.9 5.2Z"/><circle cx="12" cy="12" r="2.8"/>'),
   help: svg('<circle cx="12" cy="12" r="9"/><path d="M9.4 9.3a2.7 2.7 0 0 1 5.2.9c0 1.8-2.6 2.2-2.6 4"/><circle cx="12" cy="17.3" r=".6" fill="currentColor"/>'),
   caret: svg('<path d="M7 10l5 5 5-5"/>', 'stroke-width="2.4"'),
+  swap: svg('<path d="M4 8h14l-3.5-3.5M20 16H6l3.5 3.5"/>'),
+  close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
   history: svg('<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5v4h4"/><path d="M12 7.5V12l3 2"/>'),
   eye: svg('<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/>'),
   eyeOff: svg('<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z" opacity=".35"/><path d="M4 4l16 16"/>'),
@@ -101,6 +103,8 @@ const state = {
     faintColor: '#ff285a', // 薄い部分の色（透明チェックの「ほぼ透明」と同じ）
     dim: true,             // 縁取りを目立たせるため、絵を暗くする
   },
+  // 参考画像（ラフなど）。作業フォルダごとに覚える。チェックや書き出しには入れない
+  ref: { path: null, visible: true, opacity: 0.5, blend: 'source-over' },
   view: { zoom: 1, panX: 0, panY: 0, flipH: false, gray: false, alphaCheck: false, edge: false,
           bg: 0, guide: false, fitted: false },
 };
@@ -508,6 +512,7 @@ const GONE_GRACE_MS = 1500;
 
 async function poll() {
   if (!state.dir) return;
+  refPoll();
   let files;
   try {
     files = await Backend.listFiles();
@@ -697,6 +702,8 @@ function render() {
   if (past && hist.diff && hist.diff.view === hist.view && hist.diff.any && $('#chkSeekDiff').checked) {
     drawEdgeLook(hist.diff.cv, hist.diff);
   }
+
+  if (state.ref.path && state.ref.visible && refImg.bmp) drawReference(dw, dh);
 
   vctx.lineWidth = 1;
   vctx.strokeStyle = 'rgba(255,255,255,.35)';
@@ -2053,6 +2060,7 @@ function initViewEvents() {
     else if (k === 'g') toggleView('gray', '#btnGray');
     else if (k === 't') toggleView('alphaCheck', '#btnAlpha');
     else if (k === 'e') toggleView('edge', '#btnEdge');
+    else if (k === 'r' && state.ref.path) { state.ref.visible = !state.ref.visible; renderRef(); requestRender(); scheduleSave(); }
     else if (k === 'b') { state.view.bg = (state.view.bg + 1) % BG_MODES.length; requestRender(); scheduleSave(); }
   });
   window.addEventListener('resize', () => requestRender());
@@ -2314,6 +2322,7 @@ async function saveProject() {
     bleed: state.bleed, cutMargin: state.cutMargin, artPct: state.artPct,
     guides: state.guides,
     exportScale: state.exportScale,
+    ref: state.ref,
     view: { flipH: state.view.flipH, gray: state.view.gray, bg: state.view.bg, guide: state.view.guide },
     layers: state.layers.map((L) => ({
       name: L.name, visible: L.visible, opacity: L.opacity, blend: L.blend,
@@ -2348,6 +2357,15 @@ function applyProject(p) {
     thirds: p.guides.thirds !== false, cut: !!p.guides.cut,
   });
   if (Number.isFinite(p.exportScale) && p.exportScale > 0) state.exportScale = p.exportScale;
+  if (p.ref && typeof p.ref === 'object') {
+    const r = p.ref;
+    state.ref = {
+      path: typeof r.path === 'string' && r.path ? r.path : null,
+      visible: r.visible !== false,
+      opacity: Number.isFinite(r.opacity) ? clamp(r.opacity, 0, 1) : 0.5,
+      blend: REF_BLENDS.some(([v]) => v === r.blend) ? r.blend : 'source-over',
+    };
+  }
   if (p.view) Object.assign(state.view, {
     flipH: !!p.view.flipH, gray: !!p.view.gray,
     bg: p.view.bg | 0, guide: !!p.view.guide,
@@ -2364,6 +2382,171 @@ function applyProject(p) {
     }));
   }
   syncUiFromState();
+}
+
+/* ------------------------------------------------------------------ */
+/* 参考画像（ラフなど）                                                  */
+/*   作業フォルダの外の画像を1枚選び、キャンバスに合わせていちばん上に重ねる。  */
+/*   規格チェック・カットライン予想・縁取り表示・書き出し・履歴には入れない。  */
+/* ------------------------------------------------------------------ */
+const REF_BLENDS = [['source-over', '通常'], ['multiply', '乗算'], ['screen', 'スクリーン'], ['difference', '差の絶対値']];
+const REF_MAX = 3000;   // 長い辺をここまで縮めて持つ。見比べるには十分で、大きなラフでもメモリを食わない
+const refImg = { key: '', pendingKey: '', bmp: null, name: '', missing: false, thumb: null, loading: false };
+
+/** 画像のバイト列から、展開せずに大きさだけ読む（PNG と JPEG）。わからなければ null */
+function imageSize(buf) {
+  const b = new Uint8Array(buf), v = new DataView(buf);
+  if (b.length > 24 && b[0] === 0x89 && b[1] === 0x50) return { w: v.getUint32(16), h: v.getUint32(20) };
+  if (b.length > 4 && b[0] === 0xFF && b[1] === 0xD8) {
+    let i = 2;
+    while (i + 9 < b.length && b[i] === 0xFF) {
+      const m = b[i + 1], len = (b[i + 2] << 8) | b[i + 3];
+      if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) {
+        return { h: (b[i + 5] << 8) | b[i + 6], w: (b[i + 7] << 8) | b[i + 8] };
+      }
+      i += 2 + len;
+    }
+  }
+  return null;
+}
+
+function refRelease() {
+  if (refImg.bmp) refImg.bmp.close();
+  Object.assign(refImg, { key: '', pendingKey: '', bmp: null, name: '', missing: false, thumb: null });
+}
+
+/** 作業フォルダを開いたとき・選び直したときに、参考画像を決め直す */
+async function applyReference(path) {
+  refRelease();
+  try {
+    const info = await Backend.ref.set(path || null);
+    refImg.name = info ? info.name : path ? path.split(/[\\/]/).pop() : '';
+    refImg.missing = !!path && !info;
+    if (info) await refLoad(info);
+  } catch (e) {
+    log('error', '参考画像: ' + (e.message || e));
+    refImg.missing = !!path;
+  }
+  renderRef(); requestRender();
+}
+
+async function refLoad(info) {
+  const key = `${info.mtime}_${info.size}`;
+  if (refImg.key === key || refImg.loading) return;
+  refImg.loading = true;
+  try {
+    const buf = await Backend.ref.read();
+    if (!buf) { refImg.missing = true; return; }
+    const blob = new Blob([buf]);
+    const size = imageSize(buf);
+    let bmp;
+    if (size && Math.max(size.w, size.h) > REF_MAX) {
+      const k = REF_MAX / Math.max(size.w, size.h);
+      bmp = await createImageBitmap(blob, {
+        resizeWidth: Math.round(size.w * k), resizeHeight: Math.round(size.h * k), resizeQuality: 'high',
+      });
+    } else {
+      bmp = await createImageBitmap(blob);
+    }
+    if (refImg.bmp) refImg.bmp.close();
+    Object.assign(refImg, { bmp, key, pendingKey: key, name: info.name, missing: false });
+    // 一覧に出す小さな見本
+    const c = document.createElement('canvas');
+    c.width = c.height = 76;
+    const g = c.getContext('2d'), s = Math.min(76 / bmp.width, 76 / bmp.height);
+    g.drawImage(bmp, (76 - bmp.width * s) / 2, (76 - bmp.height * s) / 2, bmp.width * s, bmp.height * s);
+    refImg.thumb = c.toDataURL('image/png');
+    log('info', `参考画像を読み込み: ${info.name}`);
+  } catch (e) {
+    log('error', '参考画像を開けません: ' + (e.message || e));
+    refImg.missing = true;
+  } finally {
+    refImg.loading = false;
+    renderRef(); requestRender();
+  }
+}
+
+/** 上書きされたら差し替える。書き込み途中を読まないよう、2回続けて同じ日時・大きさなら読む */
+async function refPoll() {
+  if (!state.ref.path || refImg.loading) return;
+  let info = null;
+  try { info = await Backend.ref.stamp(); } catch { info = null; }
+  if (!info) {
+    if (!refImg.missing) { refImg.missing = true; renderRef(); }
+    return;
+  }
+  const key = `${info.mtime}_${info.size}`;
+  if (key === refImg.key) {
+    if (refImg.missing) { refImg.missing = false; renderRef(); }
+    return;
+  }
+  if (key !== refImg.pendingKey) { refImg.pendingKey = key; return; }
+  refLoad(info);
+}
+
+/** キャンバスに収まるように（縦横比はそのまま、真ん中に）いちばん上に重ねる */
+function drawReference(dw, dh) {
+  const v = state.view, b = refImg.bmp;
+  const k = Math.min(dw / b.width, dh / b.height);
+  const w = b.width * k, h = b.height * k;
+  vctx.save();
+  vctx.globalAlpha = clamp(state.ref.opacity, 0, 1);
+  vctx.globalCompositeOperation = state.ref.blend;
+  vctx.imageSmoothingEnabled = true; vctx.imageSmoothingQuality = 'high';
+  vctx.drawImage(b, v.panX + (dw - w) / 2 * v.zoom, v.panY + (dh - h) / 2 * v.zoom, w * v.zoom, h * v.zoom);
+  vctx.restore();
+}
+
+function renderRef() {
+  const R = state.ref, has = !!R.path;
+  $('#refEmpty').hidden = has;
+  $('#refSet').hidden = !has;
+  if (!has) return;
+  const eye = $('#refEye');
+  eye.classList.toggle('on', R.visible);
+  eye.innerHTML = R.visible ? ICON.eye : ICON.eyeOff;
+  $('#refName').textContent = refImg.name || R.path.split(/[\\/]/).pop();
+  $('#refName').title = R.path;
+  const sub = $('#refSub');
+  sub.textContent = refImg.missing ? '⚠ ファイルが見つかりません' : refImg.loading ? '読み込み中…'
+    : '参考画像（チェックや書き出しには入らない）';
+  sub.classList.toggle('bad', refImg.missing);
+  $('#refThumb').style.cssText = refImg.thumb
+    ? `background-image:url(${refImg.thumb});background-size:contain;background-repeat:no-repeat;background-position:center`
+    : '';
+  $('#refBlend').value = R.blend;
+  $('#refOpacity').value = Math.round(R.opacity * 100);
+  $('#refOpv').textContent = Math.round(R.opacity * 100) + '%';
+}
+
+function initReference() {
+  $('#refBlend').innerHTML = REF_BLENDS.map(([v, n]) => `<option value="${v}">${n}</option>`).join('');
+  const choose = async () => {
+    let p = null;
+    try {
+      p = await Backend.ref.pick();
+    } catch (e) {
+      setStatus('参考画像を選べませんでした', 'err');
+      log('error', '参考画像の選択: ' + (e.message || e));
+    }
+    if (!p) return;
+    state.ref.path = p; state.ref.visible = true;
+    scheduleSave();
+    applyReference(p);
+  };
+  $('#btnRefPick').addEventListener('click', choose);
+  $('#btnRefChange').addEventListener('click', choose);
+  $('#btnRefClear').addEventListener('click', () => { state.ref.path = null; scheduleSave(); applyReference(null); });
+  $('#refEye').addEventListener('click', () => {
+    state.ref.visible = !state.ref.visible; renderRef(); requestRender(); scheduleSave();
+  });
+  $('#refBlend').addEventListener('change', (e) => { state.ref.blend = e.target.value; requestRender(); scheduleSave(); });
+  $('#refOpacity').addEventListener('input', (e) => {
+    state.ref.opacity = e.target.value / 100;
+    $('#refOpv').textContent = e.target.value + '%';
+    requestRender(); scheduleSave();
+  });
+  renderRef();
 }
 
 /* ---------- アプリ全体の設定（作業フォルダをまたいで共通） ---------- */
@@ -2756,7 +2939,9 @@ function adoptDir(j) {
   $('#tooMany').classList.add('hide');
   state.layers = [];
   hist.id = null;
+  state.ref = { path: null, visible: true, opacity: 0.5, blend: 'source-over' };
   applyProject(j.project);
+  applyReference(state.ref.path);
   // 履歴は作業フォルダのIDで結びつける（フォルダを移動したり名前を変えたりしても続く）
   if (!hist.id) { hist.id = newId(); scheduleSave(); }
   hist.view = null;
@@ -2953,6 +3138,7 @@ function initUi() {
   initViewEvents();
   initResizers();
   initSeekbar();
+  initReference();
 }
 
 window.addEventListener('error', (e) =>

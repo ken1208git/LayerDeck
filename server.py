@@ -165,6 +165,41 @@ def mem_status():
 # ---------------------------------------------------------------------
 # フォルダ選択ダイアログ
 # ---------------------------------------------------------------------
+_ref_path = None  # 参考画像（ラフなど）。作業フォルダの外にあることが多いので、選ばれたこの1枚だけを読む
+
+
+def ref_info(p):
+    try:
+        st = os.stat(p)
+    except OSError:
+        return None
+    if not os.path.isfile(p):
+        return None
+    return {"name": os.path.basename(p), "mtime": int(st.st_mtime * 1000), "size": st.st_size}
+
+
+def pick_file(initial):
+    """別プロセスで tkinter のファイル選択ダイアログを出す"""
+    code = (
+        "import sys, tkinter as tk\n"
+        "from tkinter import filedialog\n"
+        "r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True)\n"
+        "init = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None\n"
+        "p = filedialog.askopenfilename(title='参考画像を選ぶ', initialdir=init,\n"
+        "    filetypes=[('画像', '*.png *.jpg *.jpeg *.webp *.gif *.bmp'), ('すべて', '*.*')])\n"
+        "r.destroy()\n"
+        "sys.stdout.write(p or '')\n"
+    )
+    try:
+        r = subprocess.run(
+            [sys.executable, "-c", code, initial or ""],
+            capture_output=True, text=True, encoding="utf-8", timeout=600,
+        )
+        return (r.stdout or "").strip() or None
+    except Exception:
+        return None
+
+
 def pick_folder(initial):
     """別プロセスで tkinter のダイアログを出す（tkinter はメインスレッド必須のため）。"""
     code = (
@@ -300,6 +335,23 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
 
+        if path == "/api/refstat":
+            return self._json({"ok": True, "ref": ref_info(_ref_path) if _ref_path else None})
+
+        if path == "/api/refread":
+            if not _ref_path or not os.path.isfile(_ref_path):
+                self.send_response(204)
+                self.end_headers()
+                return
+            data = Path(_ref_path).read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         if path == "/api/hist/list":
             HIST_ROOT.mkdir(exist_ok=True)
             dirs = [{"id": d.name, "bytes": dir_size(d)} for d in HIST_ROOT.iterdir() if d.is_dir()]
@@ -374,6 +426,26 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as e:
                 return self._err(str(e), 500)
             return self._json({"ok": True})
+
+        if path == "/api/pickref":
+            cur = get_dir()
+            chosen = pick_file(str(cur.parent) if cur else None)
+            return self._json({"ok": True, "path": chosen})
+
+        if path == "/api/setref":
+            global _ref_path
+            try:
+                body = json.loads(self._body() or b"{}")
+            except Exception:
+                return self._err("bad json")
+            p = body.get("path")
+            if not p:
+                _ref_path = None
+                return self._json({"ok": True, "ref": None})
+            if Path(p).suffix.lower() not in IMAGE_EXTS:
+                return self._err("画像ファイルではありません: %s" % p)
+            _ref_path = str(Path(p))
+            return self._json({"ok": True, "ref": ref_info(_ref_path)})
 
         if path == "/api/pick":
             cur = get_dir()

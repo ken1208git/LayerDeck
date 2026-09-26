@@ -64,6 +64,21 @@
         body: JSON.stringify(obj),
       });
     },
+    /** 参考画像（ラフなど）。作業フォルダの外のファイルを1枚だけ扱う */
+    ref: {
+      async pick() { return (await j('/api/pickref', { method: 'POST' })).path || null; },
+      async set(path) {
+        return (await j('/api/setref', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }),
+        })).ref || null;
+      },
+      async stamp() { return (await j('/api/refstat')).ref || null; },
+      async read() {
+        const r = await fetch('/api/refread', { cache: 'no-store' });
+        return r.ok && r.status !== 204 ? await r.arrayBuffer() : null;
+      },
+    },
+
     /** 履歴（上書きされる前の版）。rel は「作業フォルダのID/ファイル名」 */
     hist: {
       async read(rel) {
@@ -164,6 +179,20 @@
       async memStatus() { return await invoke('mem_status'); },
 
       async saveProject(obj) { await invoke('write_project', { json: JSON.stringify(obj) }); },
+
+      /** 参考画像。作業フォルダの外にあることが多いので、Rust 側が選ばれた1枚だけを読む */
+      ref: {
+        async pick() {
+          const p = await dialog.open({
+            multiple: false, directory: false, title: '参考画像を選ぶ',
+            filters: [{ name: '画像', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }],
+          });
+          return typeof p === 'string' ? p : null;
+        },
+        async set(path) { return await invoke('set_reference', { path: path || null }); },
+        async stamp() { return await invoke('reference_stamp'); },
+        async read() { try { return await invoke('reference_read'); } catch { return null; } },
+      },
 
       /** 履歴。%LOCALAPPDATA%\com.layerdeck.desktop\history\ の中。画像はバイト列のまま渡す */
       hist: {

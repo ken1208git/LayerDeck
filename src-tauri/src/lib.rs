@@ -25,6 +25,8 @@ const LOG_LIMIT: u64 = 1_000_000;
 #[derive(Default)]
 struct AppState {
     dir: Mutex<Option<PathBuf>>,
+    /// 参考画像（ラフなど）。作業フォルダの外にあることが多いので、選ばれたこの1枚だけを読む
+    reference: Mutex<Option<PathBuf>>,
 }
 
 #[derive(Serialize, Clone, PartialEq)]
@@ -406,6 +408,69 @@ fn disk_free(_p: &Path) -> Option<u64> {
     None
 }
 
+// ---------------------------------------------------------------------
+// 参考画像（ラフなどを上に重ねて見比べる）
+// ---------------------------------------------------------------------
+#[derive(Serialize)]
+struct RefInfo {
+    name: String,
+    mtime: u64,
+    size: u64,
+}
+
+fn ref_info(p: &Path) -> Option<RefInfo> {
+    let meta = std::fs::metadata(p).ok().filter(|m| m.is_file())?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let name = p.file_name()?.to_string_lossy().into_owned();
+    Some(RefInfo { name, mtime, size: meta.len() })
+}
+
+/// 参考画像を選ぶ（None で外す）。画像ファイルだけを受け付ける。ファイルが見つからなければ None を返す
+#[tauri::command]
+fn set_reference(state: State<'_, AppState>, path: Option<String>) -> Result<Option<RefInfo>, String> {
+    let Some(path) = path else {
+        *state.reference.lock().unwrap() = None;
+        return Ok(None);
+    };
+    let p = PathBuf::from(&path);
+    let is_image = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| IMAGE_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false);
+    if !is_image {
+        return Err(format!("画像ファイルではありません: {path}"));
+    }
+    let info = ref_info(&p);
+    *state.reference.lock().unwrap() = Some(p);
+    Ok(info)
+}
+
+/// 参考画像の日時と大きさ（上書きされたかを見るため）。無ければ None
+#[tauri::command]
+fn reference_stamp(state: State<'_, AppState>) -> Option<RefInfo> {
+    let p = state.reference.lock().unwrap().clone()?;
+    ref_info(&p)
+}
+
+#[tauri::command]
+fn reference_read(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String> {
+    let p = state
+        .reference
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("参考画像が選ばれていません")?;
+    std::fs::read(&p)
+        .map(tauri::ipc::Response::new)
+        .map_err(|e| e.to_string())
+}
+
 /// 確認用の書き出し先（作業フォルダの _export）を用意して、その場所を返す。
 /// フォルダを開いただけで _export ができてしまわないよう、書き出す直前に作る。
 #[tauri::command]
@@ -626,7 +691,10 @@ pub fn run() {
             history_read,
             history_remove,
             history_list,
-            history_stats
+            history_stats,
+            set_reference,
+            reference_stamp,
+            reference_read
         ])
         .setup(|app| {
             let handle = app.handle().clone();
