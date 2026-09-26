@@ -315,6 +315,48 @@ fn harden_webview(window: &tauri::WebviewWindow) {
 #[cfg(not(windows))]
 fn harden_webview(_window: &tauri::WebviewWindow) {}
 
+/// 窓を画面の作業領域（タスクバーを除いた範囲）に収める。
+///   ・窓が作業領域より大きい → 作業領域の 92% に縮めて中央へ
+///   ・大きさは収まるが、はみ出している → 位置だけ内側へ戻す
+/// 前回の大きさと位置は window-state プラグインが復元するが、
+/// 画面の小さい PC（例: 1440×852）では初期サイズのままだと下端がタスクバーの下に潜る。
+fn fit_into_work_area(w: &tauri::WebviewWindow) {
+    if w.is_maximized().unwrap_or(false) || w.is_fullscreen().unwrap_or(false) {
+        return;
+    }
+    let monitor = w
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| w.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else { return };
+    let area = *monitor.work_area();
+    let (Ok(pos), Ok(outer), Ok(inner)) = (w.outer_position(), w.outer_size(), w.inner_size()) else {
+        return;
+    };
+    // 枠（タイトルバーなど）の分。set_size は枠を除いた中身の大きさを指定するため
+    let frame_w = outer.width.saturating_sub(inner.width);
+    let frame_h = outer.height.saturating_sub(inner.height);
+    let (left, top) = (area.position.x, area.position.y);
+    let (aw, ah) = (area.size.width, area.size.height);
+
+    if outer.width > aw || outer.height > ah {
+        let ow = (aw as f64 * 0.92) as u32;
+        let oh = (ah as f64 * 0.92) as u32;
+        let _ = w.set_size(tauri::PhysicalSize::new(ow.saturating_sub(frame_w), oh.saturating_sub(frame_h)));
+        let x = left + (aw.saturating_sub(ow) / 2) as i32;
+        let y = top + (ah.saturating_sub(oh) / 2) as i32;
+        let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+        return;
+    }
+    let max_x = (left + aw as i32 - outer.width as i32).max(left);
+    let max_y = (top + ah as i32 - outer.height as i32).max(top);
+    let (x, y) = (pos.x.clamp(left, max_x), pos.y.clamp(top, max_y));
+    if (x, y) != (pos.x, pos.y) {
+        let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+}
+
 // ---------------------------------------------------------------------
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -349,6 +391,8 @@ pub fn run() {
 
             if let Some(w) = app.get_webview_window("main") {
                 harden_webview(&w);
+                // 前回の大きさ・位置が復元されたあとで、画面からはみ出していないか直す
+                fit_into_work_area(&w);
             }
 
             // 前回開いていたフォルダがあれば、そのまま復帰する
