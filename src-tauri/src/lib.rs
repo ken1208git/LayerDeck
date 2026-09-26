@@ -250,6 +250,29 @@ fn write_project(state: State<'_, AppState>, json: String) -> Result<(), String>
     std::fs::rename(&tmp, dir.join(PROJECT_NAME)).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------
+// アプリ全体の設定（縁取り表示の色など。作業フォルダをまたいで共通）
+// ---------------------------------------------------------------------
+fn settings_file(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let dir = app.path().app_config_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("settings.json"))
+}
+
+#[tauri::command]
+fn load_settings(app: tauri::AppHandle) -> Option<String> {
+    settings_file(&app).and_then(|f| std::fs::read_to_string(f).ok())
+}
+
+#[tauri::command]
+fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
+    serde_json::from_str::<serde_json::Value>(&json).map_err(|e| e.to_string())?;
+    let f = settings_file(&app).ok_or("設定の置き場所を作れません")?;
+    let tmp = f.with_extension("json.tmp");
+    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &f).map_err(|e| e.to_string())
+}
+
 /// 確認用の書き出し先（作業フォルダの _export）を用意して、その場所を返す。
 /// フォルダを開いただけで _export ができてしまわないよう、書き出す直前に作る。
 #[tauri::command]
@@ -463,7 +486,9 @@ pub fn run() {
             write_project,
             prepare_export,
             append_log,
-            log_path
+            log_path,
+            load_settings,
+            save_settings
         ])
         .setup(|app| {
             let handle = app.handle().clone();

@@ -73,6 +73,10 @@ select,input[type=number],input[type=text]{
 }
 input[type=number]{width:72px}
 input[type=checkbox]{accent-color:var(--accent); margin:0}
+input[type=color]{
+  width:44px; height:24px; padding:1px 2px; cursor:pointer;
+  background:var(--bg3); border:1px solid var(--line); border-radius:5px;
+}
 
 /* ---------- layout ---------- */
 main{display:flex; height:calc(100% - var(--bar-h))}
@@ -93,14 +97,50 @@ main{display:flex; height:calc(100% - var(--bar-h))}
   padding:5px; backdrop-filter:blur(4px);
 }
 .vsep{width:1px; height:18px; background:var(--line); margin:0 2px}
+/* 切り替えボタン＋設定の ▾ を1つのボタンに見せる */
+.split{display:inline-flex}
+.split .btn.icon.toggle{border-top-right-radius:0; border-bottom-right-radius:0}
+.btn.icon.caret{
+  min-width:16px; width:16px; padding:0; border-left:none;
+  border-top-left-radius:0; border-bottom-left-radius:0; color:var(--fg2);
+}
+.btn.icon.caret .ico{width:13px; height:13px}
+.btn.icon.caret.open{background:var(--accent2); border-color:var(--accent2); color:#fff}
+/* ▾ で開く設定の小窓（右上のボタン群の真下） */
+.pop{
+  position:absolute; right:10px; top:56px; z-index:6; width:310px;
+  max-height:calc(100% - 70px); overflow-y:auto;
+  background:rgba(22,24,29,.97); border:1px solid var(--line); border-radius:8px;
+  padding:10px 12px; box-shadow:0 10px 30px rgba(0,0,0,.5);
+}
+.pop[hidden]{display:none}
+.pop-title{font-weight:600; font-size:12px; color:var(--fg); margin-bottom:4px}
+/* ☰ のメニュー */
+.menu{
+  position:fixed; top:calc(var(--bar-h) - 4px); right:8px; z-index:60; min-width:210px;
+  background:var(--bg2); border:1px solid var(--line); border-radius:8px; padding:4px;
+  box-shadow:0 10px 30px rgba(0,0,0,.5);
+}
+.menu[hidden]{display:none}
+.menu button{
+  display:block; width:100%; text-align:left; background:none; border:none; color:var(--fg);
+  padding:7px 10px; border-radius:5px; font:inherit; font-size:12px; cursor:pointer;
+}
+.menu button:hover{background:var(--bg3)}
+.menu-sep{height:1px; background:var(--line); margin:4px 2px}
+.legends{
+  position:absolute; left:10px; top:10px; display:flex; flex-direction:column; gap:8px;
+  pointer-events:none;
+}
 .legend-box{
-  position:absolute; left:10px; top:10px; max-width:300px;
+  max-width:300px;
   background:rgba(12,13,16,.86); border:1px solid var(--line); border-radius:8px;
   padding:8px 10px; font-size:11px; color:var(--fg2); line-height:1.8; pointer-events:none;
 }
 .legend-box[hidden]{display:none}
 .legend-title{color:var(--fg); font-weight:600; margin-bottom:2px}
 .legend-note{font-size:10px; opacity:.8; margin-top:2px}
+.legend-box .spec{margin:0; padding:0; background:none; border:none}
 .sw{display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:-1px}
 
 .empty{position:absolute; inset:0; display:grid; place-items:center; text-align:center; padding:20px}
@@ -128,8 +168,8 @@ main{display:flex; height:calc(100% - var(--bar-h))}
 .note{color:var(--fg2); font-size:11px; padding:2px 0 6px; line-height:1.7}
 .keys{margin:4px 0 6px; padding-left:18px; color:var(--fg2); font-size:11px; line-height:1.9}
 .keys b{color:var(--fg)}
+.keys.help{font-size:12px; line-height:2.1; margin:0}
 code{background:var(--bg3); padding:1px 4px; border-radius:3px; font-size:11px}
-.about-link{margin-top:8px}
 
 .form{display:flex; flex-direction:column; gap:6px; padding:4px 0}
 .form > label{display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; color:var(--fg2)}
@@ -140,6 +180,7 @@ code{background:var(--bg3); padding:1px 4px; border-radius:3px; font-size:11px}
 .pair label{display:flex; align-items:center; gap:4px}
 .pair input{width:64px}
 .pair.indent{padding-left:22px}
+.form-sub{font-size:11px; color:var(--fg); font-weight:600; margin-top:6px; padding-top:6px; border-top:1px solid var(--line)}
 .hint-line{font-size:10.5px; color:var(--fg2); margin-top:-3px; display:flex; gap:8px; align-items:center}
 
 .spec{
@@ -177,6 +218,24 @@ code{background:var(--bg3); padding:1px 4px; border-radius:3px; font-size:11px}
   background:var(--bg2); cursor:pointer; display:grid; place-items:center; color:var(--fg2); padding:0;
 }
 .eye.on{color:var(--accent); border-color:var(--accent2)}
+/* ソロ中のレイヤー：目を黄色く、行のふちも黄色に */
+.row.soloed{border-color:var(--warn)}
+.row.soloed .eye{color:#1a1206; background:var(--warn); border-color:var(--warn)}
+.solo-banner{
+  position:absolute; right:10px; bottom:10px;
+  background:var(--warn); color:#1a1206; border:none; border-radius:14px;
+  padding:5px 14px; font:inherit; font-size:12px; font-weight:600; cursor:pointer;
+  box-shadow:0 2px 8px rgba(0,0,0,.4);
+}
+.solo-banner[hidden]{display:none}
+.hover-tip{
+  position:absolute; pointer-events:none; z-index:5; white-space:nowrap;
+  background:rgba(12,13,16,.94); border:1px solid var(--line); border-radius:6px;
+  padding:4px 9px; font-size:11px; color:var(--fg2); line-height:1.7;
+}
+.hover-tip b{color:var(--fg); font-weight:600}
+.hover-tip[hidden]{display:none}
+.solo-banner:hover{filter:brightness(1.08)}
 .thumb{
   width:38px; height:38px; flex:0 0 38px; border-radius:5px; border:1px solid var(--line);
   background-color:#1a1c21;

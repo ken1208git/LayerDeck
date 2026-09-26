@@ -16,7 +16,14 @@
   <div class="sp"></div>
   <button id="btnExport" class="btn">書き出し…</button>
   <div id="status" class="status"></div>
+  <button id="btnMenu" class="btn icon" data-icon="menu" title="メニュー" aria-haspopup="true"></button>
 </header>
+<div id="menu" class="menu" hidden>
+  <button data-act="help">使い方とショートカット</button>
+  <button data-act="log">ログを表示</button>
+  <div class="menu-sep"></div>
+  <button data-act="about">LayerDeck について</button>
+</div>
 
 <main>
   <section id="stage">
@@ -43,18 +50,33 @@
       </div>
     </div>
 
+    <button id="soloBanner" class="solo-banner" title="押すとソロを解除" hidden></button>
+    <div id="hoverTip" class="hover-tip" hidden></div>
+
     <div id="hud" class="hud">
       <span id="hudZoom">100%</span>
       <span id="hudSize"></span>
       <span id="hudMm"></span>
     </div>
 
-    <div id="alphaLegend" class="legend-box" hidden>
-      <div class="legend-title">透明チェック</div>
-      <div><i class="sw" style="background:#464a54"></i>不透明</div>
-      <div><i class="sw" style="background:#ff9628"></i>半透明（ぼかし・グローなど）</div>
-      <div><i class="sw" style="background:#ff285a"></i>ほぼ透明（見えにくいが形に含まれうる）</div>
-      <div class="legend-note">線のふちが細く橙になるのは正常です（ふちのなめらかさ）</div>
+    <div class="legends">
+      <div id="alphaLegend" class="legend-box" hidden>
+        <div class="legend-title">透明チェック</div>
+        <div><i class="sw" style="background:#464a54"></i>不透明</div>
+        <div><i class="sw" style="background:#ff9628"></i>半透明（ぼかし・グローなど）</div>
+        <div><i class="sw" style="background:#ff285a"></i>ほぼ透明（見えにくいが形に含まれうる）</div>
+        <div class="legend-note">線のふちが細く橙になるのは正常です（ふちのなめらかさ）</div>
+      </div>
+      <div id="edgeLegend" class="legend-box" hidden>
+        <div class="legend-title" id="edgeTitle">縁取り表示</div>
+        <div><i class="sw" id="edgeSwA"></i><span id="edgeLabelA">縁取り</span></div>
+        <div><i class="sw" id="edgeSwB"></i><span id="edgeLabelB">薄い部分</span></div>
+        <div class="legend-note" id="edgeNote"></div>
+      </div>
+      <div id="cutLegend" class="legend-box" hidden>
+        <div class="legend-title">カットライン予想</div>
+        <div id="cutInfo" class="spec"></div>
+      </div>
     </div>
 
     <div id="viewbar" class="viewbar">
@@ -64,8 +86,45 @@
       <button class="btn icon toggle" id="btnFlip" data-icon="flip" title="左右反転チェック (H)"></button>
       <button class="btn icon toggle" id="btnGray" data-icon="gray" title="明度チェック（グレー表示） (G)"></button>
       <button class="btn icon toggle" id="btnAlpha" data-icon="alpha" title="透明チェック：半透明やほぼ透明の部分を色分け (T)"></button>
-      <button class="btn icon toggle" id="btnGuide" data-icon="guide" title="ガイドを表示（種類は右下の「ガイド」で選択）"></button>
+      <span class="split">
+        <button class="btn icon toggle" id="btnEdge" data-icon="edge" title="縁取り表示：ゴミ・にじみ・塗り残し探し、切り抜きのふちの確認 (E)"></button>
+        <button class="btn icon caret" id="btnEdgeOpts" data-icon="caret" title="縁取り表示の設定"></button>
+      </span>
+      <span class="split">
+        <button class="btn icon toggle" id="btnGuide" data-icon="guide" title="ガイドを表示"></button>
+        <button class="btn icon caret" id="btnGuideOpts" data-icon="caret" title="ガイドの種類"></button>
+      </span>
       <button class="btn icon" id="btnBg" data-icon="bg" title="背景を切り替え：市松／白／灰／黒 (B)"></button>
+    </div>
+
+    <div id="edgePop" class="pop" hidden>
+      <div class="pop-title">縁取り表示</div>
+      <div class="form">
+        <label>太さ
+          <span class="inline"><input type="number" id="inEdgeWidth" min="0.1" max="100" step="0.5"> mm</span>
+        </label>
+        <label>向き
+          <select id="selEdgeSide">
+            <option value="out">外側（ゴミ・にじみ・切り抜きのふち）</option>
+            <option value="in">内側（塗り残しの穴）</option>
+          </select>
+        </label>
+        <label>縁取りの色<input type="color" id="inEdgeColor"></label>
+        <label>薄い部分の色<input type="color" id="inEdgeFaintColor"></label>
+        <label class="check"><span>絵を暗くする</span><input type="checkbox" id="chkEdgeDim"></label>
+        <div class="hint-line">ゴミ探しは 1〜3mm。白・10mm で暗くしないと、切り抜いたときの白いふちの見え方になります</div>
+      </div>
+    </div>
+
+    <div id="guidePop" class="pop" hidden>
+      <div class="pop-title">ガイド</div>
+      <div class="guides">
+        <label><input type="checkbox" id="gTrim"><i class="ln trim"></i>仕上がり線（塗り足しの内側）</label>
+        <label><input type="checkbox" id="gCenter"><i class="ln center"></i>中心線</label>
+        <label><input type="checkbox" id="gThirds"><i class="ln thirds"></i>三分割線</label>
+        <label><input type="checkbox" id="gCut"><i class="ln cut"></i>カットライン予想</label>
+        <div class="hint-line">余白と、絵とみなす不透明度は、右の「用紙・解像度」で変えられます</div>
+      </div>
     </div>
   </section>
 
@@ -99,38 +158,18 @@
             <span class="inline"><input type="number" id="inBleed" min="0" max="30" step="0.5"> mm</span>
           </label>
           <div class="hint-line">四角く刷るときの値。切り抜き（ダイカット）なら 0</div>
+          <div class="form-sub">切り抜き</div>
+          <label>カットラインの余白
+            <span class="inline"><input type="number" id="inCutMargin" min="0" max="50" step="1"> mm</span>
+          </label>
+          <label>絵とみなす不透明度
+            <span class="inline"><input type="number" id="inArtPct" min="1" max="100" step="1"> %</span>
+          </label>
+          <div class="hint-line">これ未満の薄い部分は、カットライン予想で絵に含めず、縁取り表示で色分けします</div>
         </div>
         <div id="specResult" class="spec"></div>
       </details>
 
-      <details id="guidePanel">
-        <summary>ガイド</summary>
-        <div class="guides">
-          <label><input type="checkbox" id="gTrim"><i class="ln trim"></i>仕上がり線（塗り足しの内側）</label>
-          <label><input type="checkbox" id="gCenter"><i class="ln center"></i>中心線</label>
-          <label><input type="checkbox" id="gThirds"><i class="ln thirds"></i>三分割線</label>
-          <label><input type="checkbox" id="gCut"><i class="ln cut"></i>カットライン予想</label>
-          <div class="pair indent">
-            <label>絵の外側<input type="number" id="inCutMargin" min="0" max="50" step="1"> mm</label>
-          </div>
-        </div>
-        <div id="cutInfo" class="spec"></div>
-      </details>
-
-      <details>
-        <summary>使い方 / ショートカット</summary>
-        <ul class="keys">
-          <li><b>ホイール</b> ズーム ／ <b>ドラッグ</b> 移動</li>
-          <li><b>F</b> 全体表示 ／ <b>1</b> 実寸（100%）</li>
-          <li><b>H</b> 左右反転 ／ <b>G</b> 明度チェック ／ <b>T</b> 透明チェック</li>
-          <li><b>B</b> 背景の切り替え</li>
-          <li><b>目のアイコンを Alt+クリック</b> そのレイヤーだけ表示</li>
-          <li>同じ名前で上書き保存すると、表示が差し替わります</li>
-          <li>ファイル名を <code>01_背景.png</code> のように番号から始めると、<br>番号の小さいものが下に積まれます</li>
-        </ul>
-      </details>
-
-      <button class="linkbtn about-link" id="btnAbout">LayerDeck について</button>
     </div>
   </aside>
 </main>
@@ -141,7 +180,7 @@
     <div class="modal-body">
       <div class="caution">
         <b>これは確認用です。そのまま納品しないでください。</b><br>
-        最終的な統合と納品は、描いたソフト側（ibisPaint など）で行ってください。
+        最終的な統合と納品は、描いたペイントソフト側で行ってください。
         色の扱いが描画時と揃い、印刷所の指定にも対応しやすいためです。
       </div>
       <div class="scale-list" id="scaleList"></div>
@@ -152,6 +191,29 @@
       <button class="btn" id="btnExportReveal" hidden>フォルダで表示</button>
       <button class="btn" id="btnExportClose">キャンセル</button>
       <button class="btn primary" id="btnExportGo">書き出す</button>
+    </div>
+  </div>
+</div>
+
+<div id="helpModal" class="modal" hidden>
+  <div class="modal-box wide" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+    <div class="modal-head" id="helpTitle">使い方とショートカット</div>
+    <div class="modal-body">
+      <ul class="keys help">
+        <li><b>ホイール</b> ズーム ／ <b>ドラッグ</b> 移動</li>
+        <li><b>F</b> 全体表示 ／ <b>1</b> 実寸（100%）</li>
+        <li><b>H</b> 左右反転 ／ <b>G</b> 明度チェック ／ <b>T</b> 透明チェック</li>
+        <li><b>E</b> 縁取り表示（ゴミ探し・切り抜きのふちの確認）。縁取りにカーソルを乗せると、どのレイヤーの色かが出ます</li>
+        <li><b>B</b> 背景の切り替え</li>
+        <li>縁取り表示とガイドの設定は、右上のボタンの横の <b>▾</b> から</li>
+        <li><b>目のアイコンを Alt+クリック</b> ソロ（そのレイヤーだけ表示。複数可、<b>Esc</b> で解除すると元の表示に戻る）</li>
+        <li>同じ名前で上書き保存すると、表示が差し替わります</li>
+        <li>ファイル名を <code>01_背景.png</code> のように番号から始めると、<br>番号の小さいものが下に積まれます</li>
+      </ul>
+    </div>
+    <div class="modal-foot">
+      <div class="status"></div>
+      <button class="btn primary" id="btnHelpClose">閉じる</button>
     </div>
   </div>
 </div>

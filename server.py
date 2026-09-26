@@ -25,12 +25,14 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 APP_DIR = Path(__file__).resolve().parent
 IMAGE_EXTS = {".png", ".webp", ".jpg", ".jpeg", ".gif", ".bmp"}
 PROJECT_NAME = "layerdeck.project.json"
 EXPORT_DIR = "_export"
+# アプリ全体の設定（デスクトップ版では %APPDATA%\com.layerdeck.desktop\settings.json）。開発用は手元に置く
+SETTINGS_FILE = APP_DIR / ".dev-settings.json"
 
 UI_DIR = APP_DIR / "ui"
 STATIC = {
@@ -39,6 +41,7 @@ STATIC = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/backend.js": ("backend.js", "text/javascript; charset=utf-8"),
     "/tiler.js": ("tiler.js", "text/javascript; charset=utf-8"),
+    "/edger.js": ("edger.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/licenses.txt": ("licenses.txt", "text/plain; charset=utf-8"),
 }
@@ -257,6 +260,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/mem":
             return self._json({"ok": True, "mem": mem_status()})
 
+        if path == "/api/settings":
+            try:
+                settings = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                settings = None
+            return self._json({"ok": True, "settings": settings})
+
         if path == "/file":
             name = (q.get("name") or [""])[0]
             p = self._safe_file(name)
@@ -279,6 +289,20 @@ class Handler(BaseHTTPRequestHandler):
     # ---- POST -------------------------------------------------------
     def do_POST(self):
         path = urlparse(self.path).path
+
+        if path == "/api/settings":
+            try:
+                body = self._body().decode("utf-8")
+                json.loads(body)
+            except Exception:
+                return self._err("bad json")
+            tmp = SETTINGS_FILE.with_suffix(".tmp")
+            try:
+                tmp.write_text(body, encoding="utf-8")
+                os.replace(tmp, SETTINGS_FILE)
+            except OSError as e:
+                return self._err(str(e), 500)
+            return self._json({"ok": True})
 
         if path == "/api/pick":
             cur = get_dir()
@@ -305,6 +329,12 @@ class Handler(BaseHTTPRequestHandler):
             d = get_dir()
             if not d:
                 return self._err("フォルダ未選択")
+            # サーバーを別のフォルダで起動し直したとき、前から開いたままの古い画面が
+            # 自分の設定を新しいフォルダへ上書きしてしまう（実際に起きた）。画面が見ている
+            # フォルダと食い違ったら断る。
+            sent = self.headers.get("X-Layerdeck-Dir")
+            if sent and Path(unquote(sent)).resolve() != d:
+                return self._err("別のフォルダを開いていた画面からの保存なので止めました。画面を読み込み直してください", 409)
             try:
                 body = self._body().decode("utf-8")
                 json.loads(body)

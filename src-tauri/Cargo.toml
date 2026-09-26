@@ -1,6 +1,6 @@
 [package]
 name = "layerdeck"
-version = "0.3.1"
+version = "0.4.0"
 description = "透過PNG リアルタイム重ね合わせプレビュー"
 license = "MIT"
 edition = "2021"

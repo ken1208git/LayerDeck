@@ -49,8 +49,6 @@ const PAPERS = [
 
 /** これを超える枚数のフォルダは、確認するまで読み込まない */
 const MAX_AUTO_LAYERS = 60;
-/** カットライン予想で「絵」とみなす不透明度（0〜255）。10% 程度 */
-const CUT_ALPHA = 26;
 /** 書き出し倍率 */
 const EXPORT_SCALES = [[1, '原寸'], [0.5, '1/2'], [0.25, '1/4'], [0.125, '1/8']];
 
@@ -61,9 +59,12 @@ const ICON = {
   flip: svg('<path d="M12 3v18"/><path d="M8 7l-5 5 5 5z"/><path d="M16 7l5 5-5 5z"/>'),
   gray: svg('<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/>'),
   alpha: svg('<circle cx="12" cy="12" r="5" fill="currentColor"/><circle cx="12" cy="12" r="9" stroke-dasharray="2.5 2.5"/>'),
+  edge: svg('<path d="M12 7.5c2.4 0 4 1.8 4 4.3S14 16.5 12 16.5 8 14.3 8 11.8 9.6 7.5 12 7.5z" fill="currentColor" stroke="none"/><path d="M12 3.5c4.3 0 7.5 3.4 7.5 8.3S15.8 20.5 12 20.5 4.5 16.7 4.5 11.8 7.7 3.5 12 3.5z"/>'),
   guide: svg('<rect x="4" y="4" width="16" height="16" rx="1" stroke-dasharray="3 3"/><path d="M12 7v10M7 12h10" stroke-width="1.5"/>'),
   bg: svg('<rect x="4" y="4" width="16" height="16" rx="1.5"/><path d="M4 12h8V4M12 20v-8h8" fill="currentColor" stroke="none" opacity=".55"/>'),
   folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
+  menu: svg('<path d="M4 7h16M4 12h16M4 17h16"/>'),
+  caret: svg('<path d="M7 10l5 5 5-5"/>', 'stroke-width="2.4"'),
   eye: svg('<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/>'),
   eyeOff: svg('<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z" opacity=".35"/><path d="M4 4l16 16"/>'),
   up: svg('<path d="M6 15l6-6 6 6"/>', 'stroke-width="2.6"'),
@@ -84,9 +85,20 @@ const state = {
   dpiSource: 'default',    // 'png'=画像から読み取り / 'manual'=手入力 / 'default'=仮の値
   bleed: 0,                // 四角く刷るときの塗り足し（mm）
   cutMargin: 10,           // カットライン予想：絵の何mm外側で切るか（プリオは約10mm）
+  // 印刷所が「絵」とみなす不透明度（%）。カットライン予想・縁取り表示の薄い部分・透明チェックで共通。
+  // 印刷所は公開していないので仮の値
+  artPct: 10,
   guides: { trim: true, center: true, thirds: true, cut: false },
   exportScale: 1,          // 書き出しの倍率。用紙の物理サイズは変えず解像度だけ下げる
-  view: { zoom: 1, panX: 0, panY: 0, flipH: false, gray: false, alphaCheck: false,
+  // 縁取り表示：ゴミ・薄いにじみ・塗り残しを、縁取りでふくらませて目で探せるようにする
+  edge: {
+    width: 2,              // 太さ（mm）。ゴミ探しは 1〜3、切り抜きの白いふちの確認は 10
+    side: 'out',           // 'out'=絵の外側 / 'in'=絵の内側（塗り残しの穴が点で出る）
+    color: '#7dff3a',      // 縁取りの色（カットライン予想の水色と見分けがつくよう黄緑）
+    faintColor: '#ff285a', // 薄い部分の色（透明チェックの「ほぼ透明」と同じ）
+    dim: true,             // 縁取りを目立たせるため、絵を暗くする
+  },
+  view: { zoom: 1, panX: 0, panY: 0, flipH: false, gray: false, alphaCheck: false, edge: false,
           bg: 0, guide: false, fitted: false },
 };
 
@@ -103,6 +115,14 @@ let mem = null;
 
 /** name -> "mtime_size" 前回のポーリングで見えた版（書き込み途中の検出用） */
 const seen = new Map();
+
+/**
+ * ソロ中のレイヤー名（DAW のソロと同じ）。目のアイコン（＝ミュート）の状態とは別に持ち、
+ * ソロを全部解除すれば元の表示にそのまま戻る。設定ファイルには保存しない。
+ */
+const solo = new Set();
+/** 画面に出すか。ソロ中はソロのレイヤーだけ（非表示にしていたものでも出す） */
+const shown = (L) => !L.missing && (solo.size ? solo.has(L.name) : L.visible);
 let allowManyLayers = false;
 
 let raf = 0, layersRaf = 0, vw = 0, vh = 0, saveTimer = 0, busy = false;
@@ -110,6 +130,14 @@ let saveFailed = false, lastLoggedErr = '';
 
 /** カットライン予想の計算結果 */
 const cut = { key: '', path: null, stats: null, timer: 0, running: false, waiting: false };
+
+/** 縁取り表示の下調べと、そこから作った重ね絵 */
+const edgeJob = {
+  worker: null, jobId: 0, runningKey: '', running: false, waiting: false, failed: false, progress: 0,
+  map: null,    // { key, S, cw, ch, maxA, minA } 原寸を S×S のマスに縮めた「いちばん濃い／薄い不透明度」
+  look: null,   // { key, pad, W, H, S, under, over, faintCount } map と設定から作った重ね絵
+  timer: 0, lookTimer: 0,
+};
 
 const newLayer = (name) => ({
   name, visible: true, opacity: 1, blend: 'source-over',
@@ -172,6 +200,8 @@ function docSize() {
 }
 
 const pxToMm = (px) => px / state.dpi * 25.4;
+/** 「絵」とみなす不透明度を 0〜255 で */
+const artAlpha = () => clamp(Math.round(state.artPct * 2.55), 1, 255);
 
 /* ------------------------------------------------------------------ */
 /* 用紙と規格チェック                                                    */
@@ -266,7 +296,7 @@ function updateSpec() {
   } else {
     const ex = expectedPx(pm);
     const orient = pm.landscape ? '横' : '縦';
-    lines.push(`ibis で作る大きさ <b>${ex.w} × ${ex.h} px</b>`);
+    lines.push(`作るキャンバスの大きさ <b>${ex.w} × ${ex.h} px</b>`);
     lines.push(`（${pm.label}・${orient}向き・${state.dpi}dpi${state.bleed > 0 ? `・塗り足し${state.bleed}mm込み` : ''}）`);
     const loaded = state.layers.filter((L) => !L.missing && tilesets.get(L.name)?.w);
     const bad = loaded.filter((L) => !judge(tilesets.get(L.name), pm).ok);
@@ -507,6 +537,7 @@ async function poll() {
     if (!L.goneAt) { L.goneAt = now; setTimeout(poll, GONE_GRACE_MS + 100); continue; }
     if (now - L.goneAt < GONE_GRACE_MS) continue;
     L.missing = true; L.goneAt = 0;
+    solo.delete(L.name);
     dropTileset(L.name);
     log('info', `ファイルが無くなったので一覧から外す: ${L.name}`);
     dirty = true;
@@ -605,7 +636,7 @@ function render() {
   stageCtx.globalCompositeOperation = 'source-over';
 
   for (const L of state.layers) {
-    if (!L.visible || L.missing) continue;
+    if (!shown(L)) continue;
     const ts = tilesets.get(L.name);
     if (!ts || !ts.w || !ts.levels.length) continue;
     layerCtx.clearRect(0, 0, vw, vh);
@@ -618,6 +649,13 @@ function render() {
   stageCtx.globalCompositeOperation = 'source-over';
 
   if (v.alphaCheck) paintAlphaCheck();
+  else if (v.edge && state.edge.dim) {
+    // 絵のある所だけを暗くする（透明な所はそのまま）
+    stageCtx.globalCompositeOperation = 'source-atop';
+    stageCtx.fillStyle = 'rgba(0,0,0,.6)';
+    stageCtx.fillRect(0, 0, vw, vh);
+    stageCtx.globalCompositeOperation = 'source-over';
+  }
 
   const x = v.panX, y = v.panY, w = dw * v.zoom, h = dh * v.zoom;
 
@@ -633,7 +671,11 @@ function render() {
     vctx.fillRect(x, y, w, h);
   }
 
+  // 縁取りは絵の下に敷き、薄い部分の色と内側の縁取りは絵の上に重ねる
+  const look = v.edge ? edgeJob.look : null;
+  if (look && look.under) drawEdgeLook(look.under, look);
   vctx.drawImage(stageCv, 0, 0, stageCv.width, stageCv.height, 0, 0, vw, vh);
+  if (look) drawEdgeLook(look.over, look);
 
   vctx.lineWidth = 1;
   vctx.strokeStyle = 'rgba(255,255,255,.35)';
@@ -653,12 +695,12 @@ function render() {
 function paintAlphaCheck() {
   const W = stageCv.width, H = stageCv.height;
   const img = stageCtx.getImageData(0, 0, W, H);
-  const d = img.data;
+  const d = img.data, T = artAlpha();
   for (let i = 0; i < d.length; i += 4) {
     const a = d[i + 3];
     if (a === 0) continue;                                          // 透明 → 市松が見える
     if (a >= 250) { d[i] = 70; d[i + 1] = 74; d[i + 2] = 84; }      // 不透明
-    else if (a >= CUT_ALPHA) { d[i] = 255; d[i + 1] = 150; d[i + 2] = 40; }  // 半透明
+    else if (a >= T) { d[i] = 255; d[i + 1] = 150; d[i + 2] = 40; }  // 半透明
     else { d[i] = 255; d[i + 1] = 40; d[i + 2] = 90; }             // ほぼ透明
     d[i + 3] = 255;
   }
@@ -826,12 +868,14 @@ function updateHud(dw, dh) {
 /* ------------------------------------------------------------------ */
 function cutKey() {
   const { w: dw, h: dh } = docSize();
-  const vis = state.layers.filter((L) => L.visible && !L.missing && L.opacity > 0);
-  return JSON.stringify([state.dpi, state.cutMargin, dw, dh,
+  const vis = state.layers.filter((L) => shown(L) && L.opacity > 0);
+  return JSON.stringify([state.dpi, state.cutMargin, state.artPct, dw, dh,
     vis.map((L) => [L.name, tilesets.get(L.name)?.ver, L.x, L.y, L.scale, L.flipH, L.opacity])]);
 }
 
 function scheduleCut() {
+  // 縁取り表示も同じもの（表示中のレイヤー）から作るので、一緒に予約する
+  scheduleEdge();
   clearTimeout(cut.timer);
   if (!(state.view.guide && state.guides.cut)) { updateCutInfo(); return; }
   cut.timer = setTimeout(computeCut, 350);
@@ -841,7 +885,7 @@ async function computeCut() {
   if (!(state.view.guide && state.guides.cut) || cut.running) return;
   const { w: dw, h: dh } = docSize();
   if (!dw) { cut.path = null; cut.stats = null; updateCutInfo(); return; }
-  const vis = state.layers.filter((L) => L.visible && !L.missing && L.opacity > 0);
+  const vis = state.layers.filter((L) => shown(L) && L.opacity > 0);
   const sets = vis.map((L) => tilesets.get(L.name));
   if (sets.some((ts) => !ts || ts.status === 'tiling')) { cut.waiting = true; updateCutInfo(); return; }
   const key = cutKey();
@@ -887,11 +931,11 @@ async function computeCut() {
     const px = g.getImageData(0, 0, gw, gh).data;
 
     // 2) 「絵」とみなす部分
-    const inside = new Uint8Array(W * H);
+    const inside = new Uint8Array(W * H), T = artAlpha();
     let any = false;
     for (let y = 0; y < gh; y++) {
       const row = (y + pad) * W + pad;
-      for (let x = 0; x < gw; x++) if (px[(y * gw + x) * 4 + 3] >= CUT_ALPHA) { inside[row + x] = 1; any = true; }
+      for (let x = 0; x < gw; x++) if (px[(y * gw + x) * 4 + 3] >= T) { inside[row + x] = 1; any = true; }
     }
     if (!any) { cut.path = null; cut.stats = { empty: true }; cut.key = key; return; }
 
@@ -1032,6 +1076,8 @@ function marchingSquares(f, W, H, emit) {
 }
 
 function updateCutInfo() {
+  // 結果はプレビュー左上に出す（ガイド表示中で、カットライン予想を選んでいるときだけ）
+  $('#cutLegend').hidden = !(state.view.guide && state.guides.cut);
   const box = $('#cutInfo');
   if (!state.guides.cut) { box.innerHTML = ''; return; }
   if (!state.view.guide) { box.innerHTML = '画面右上のガイドのボタンを押すと表示・計算します'; return; }
@@ -1041,22 +1087,349 @@ function updateCutInfo() {
   if (!s) { box.innerHTML = ''; return; }
   if (s.empty) { box.innerHTML = '表示中のレイヤーに不透明な部分がありません'; return; }
 
+  // プレビューの上に重ねて出すので、結果は短く、説明は小さな注記にする
   const mm = (px) => pxToMm(Math.max(0, px));
   const lines = [];
   lines.push(s.pieces === 1
-    ? '<span class="ok">✓ 1つながりの形です</span>'
-    : `<span class="bad">⚠ ${s.pieces}つに分かれています</span>（離れた部分は別に切り抜かれるか、無視されます）`);
+    ? '<span class="ok">✓ 1つながりの形</span>'
+    : `<span class="bad">⚠ ${s.pieces}つに分かれています</span>`);
   const names = { top: '上', bottom: '下', left: '左', right: '右' };
   const over = Object.entries(s.over).filter(([, v]) => mm(v) >= 0.5);
   if (over.length) {
-    lines.push(`<span class="bad">⚠ キャンバスからはみ出します：${over.map(([k, v]) => `${names[k]} ${mm(v).toFixed(1)}mm`).join('・')}</span>`);
-    lines.push('用紙の中に収める必要がある場合は、その辺の絵を内側へ寄せてください');
+    lines.push(`<span class="bad">⚠ はみ出し：${over.map(([k, v]) => `${names[k]} ${mm(v).toFixed(1)}mm`).join('・')}</span>`);
   } else {
     const gaps = Object.values(s.over).map((v) => mm(-v));
-    lines.push(`<span class="ok">✓ キャンバス内に収まっています</span>（端まで最短 ${Math.min(...gaps).toFixed(1)}mm）`);
+    lines.push(`<span class="ok">✓ キャンバス内</span>（端まで最短 ${Math.min(...gaps).toFixed(1)}mm）`);
   }
-  lines.push(`絵の ${state.cutMargin}mm 外側で計算（不透明度10%以上を絵とみなす）。実際の線は印刷所が作ります`);
-  box.innerHTML = lines.join('<br>');
+  const notes = [`絵の ${state.cutMargin}mm 外側・不透明度${state.artPct}%以上を絵として計算。実際の線は印刷所が作ります`];
+  if (s.pieces > 1) notes.unshift('離れた部分は、別に切り抜かれるか無視されます');
+  if (over.length) notes.unshift('用紙に収めるなら、その辺の絵を内側へ寄せてください');
+  box.innerHTML = lines.join('<br>') + `<div class="legend-note">${notes.join('<br>')}</div>`;
+}
+
+/* ------------------------------------------------------------------ */
+/* 縁取り表示                                                           */
+/*   絵に太い縁取りをかけて、1px のゴミや薄いにじみ・塗り残しを、目で探せる     */
+/*   大きさにふくらませる。ペイントソフトで縁取りをかけて探すのと同じ考え方。     */
+/*   白・10mm にすると、切り抜いたときの白いふちの見え方になる。               */
+/* ------------------------------------------------------------------ */
+const visibleLayers = () => state.layers.filter((L) => shown(L) && L.opacity > 0);
+
+/** 下調べをやり直す必要があるかの目印。重ねる順番は不透明度に効かないので名前順にそろえる */
+function edgeKey() {
+  const { w: dw, h: dh } = docSize();
+  const vis = visibleLayers().map((L) => [L.name, tilesets.get(L.name)?.ver, L.x, L.y, L.scale, L.flipH, L.opacity]);
+  vis.sort((a, b) => byName(a[0], b[0]));
+  return JSON.stringify([dw, dh, vis]);
+}
+
+function scheduleEdge() {
+  clearTimeout(edgeJob.timer);
+  if (!state.view.edge) { updateEdgeLegend(); return; }
+  edgeJob.timer = setTimeout(computeEdgeMap, 300);
+}
+
+/** 原寸の下調べを worker に頼む（数秒）。太さや色を変えただけなら、やり直さない */
+function computeEdgeMap() {
+  if (!state.view.edge) return;
+  const { w: dw, h: dh } = docSize();
+  const vis = visibleLayers();
+  const sets = vis.map((L) => tilesets.get(L.name));
+  if (!dw || !vis.length) {
+    edgeJob.map = null; edgeJob.look = null; edgeJob.waiting = false;
+    updateEdgeLegend(); requestRender();
+    return;
+  }
+  if (sets.some((ts) => !ts || ts.status === 'tiling')) { edgeJob.waiting = true; updateEdgeLegend(); return; }
+  edgeJob.waiting = false;
+  const key = edgeKey();
+  if (edgeJob.map && edgeJob.map.key === key) { buildEdgeLook(); return; }
+  if (edgeJob.running && edgeJob.runningKey === key) return;
+
+  // 1マス＝S×S ピクセル。A2・250dpi（5846px）で S=4（約0.4mm）
+  const S = Math.max(1, Math.round(Math.max(dw, dh) / 1500));
+  const layers = [];
+  vis.forEach((L, i) => {
+    const ts = sets[i];
+    if (!ts || ts.status !== 'ready') return;   // 読み込みに失敗したものは飛ばす
+    const lev = ts.levels[0];
+    const tiles = [];
+    for (let r = 0; r < lev.rows; r++) {
+      for (let c = 0; c < lev.cols; c++) {
+        const rec = ts.blobs.get(`0|${c}|${r}`);
+        if (rec) tiles.push({ c, r, w: rec.w, h: rec.h, blob: rec.blob });
+      }
+    }
+    layers.push({ w: ts.w, h: ts.h, tile: ts.tile, x: L.x, y: L.y, scale: L.scale,
+      flipH: L.flipH, opacity: clamp(L.opacity, 0, 1), tiles });
+  });
+
+  if (!edgeJob.worker) {
+    edgeJob.worker = new Worker('edger.js');
+    edgeJob.worker.onmessage = onEdgeMessage;
+    edgeJob.worker.onerror = (e) => {
+      log('error', '縁取り表示: ' + (e.message || '作業用のスクリプト（edger.js）を読み込めませんでした'));
+      edgeJob.running = false; edgeJob.failed = true; edgeJob.worker = null;
+      updateEdgeLegend();
+    };
+  }
+  edgeJob.jobId++;
+  edgeJob.running = true; edgeJob.failed = false; edgeJob.runningKey = key; edgeJob.progress = 0;
+  edgeJob.worker.postMessage({ id: edgeJob.jobId, dw, dh, S, layers });
+  updateEdgeLegend();
+}
+
+function onEdgeMessage(e) {
+  const m = e.data;
+  if (m.id !== edgeJob.jobId) return;   // 途中でやめた古い依頼
+  if (m.type === 'progress') { edgeJob.progress = m.done / m.total; updateEdgeLegend(); return; }
+  edgeJob.running = false;
+  if (m.type === 'error') {
+    log('error', '縁取り表示: ' + m.message);
+    edgeJob.map = null; edgeJob.look = null; edgeJob.failed = true;
+    updateEdgeLegend(); requestRender();
+    return;
+  }
+  edgeJob.map = { key: edgeJob.runningKey, S: m.S, cw: m.cw, ch: m.ch, maxA: m.maxA, minA: m.minA };
+  buildEdgeLook();
+  if (edgeKey() !== edgeJob.map.key) scheduleEdge();   // 計算中に何か変わっていたらやり直す
+}
+
+/** 「絵を暗くする」ときに絵の下へ敷く色 */
+const EDGE_DARK = [30, 33, 41];
+
+function edgeLookKey() {
+  const E = state.edge;
+  return JSON.stringify([edgeJob.map && edgeJob.map.key, state.dpi, state.artPct, E.width, E.side, E.color, E.faintColor, E.dim]);
+}
+
+/** 太さや色を打ち込んでいる途中に何度も作り直さないよう、少し待ってから作る */
+function scheduleEdgeLook() {
+  clearTimeout(edgeJob.lookTimer);
+  edgeJob.lookTimer = setTimeout(buildEdgeLook, 150);
+}
+
+/**
+ * 下調べの結果と設定から、縁取りの重ね絵を作る。
+ *   外側 : 濃い部分から太さ以内 → 縁取りの色。薄い部分だけから太さ以内 → 薄い部分の色
+ *   内側 : 透明（に近い）ピクセルを含むマスから太さ以内の、絵の部分 → 縁取りの色
+ *          塗りの中の小さな穴が、縁取りの色の点になって見える
+ *   両方 : 薄い部分そのものを、薄い部分の色で塗る
+ */
+function buildEdgeLook() {
+  const M = edgeJob.map;
+  if (!M) return;
+  const key = edgeLookKey();
+  if (edgeJob.look && edgeJob.look.key === key) return;
+  const E = state.edge;
+  const r = E.width / 25.4 * state.dpi / M.S;         // 太さをマス数で
+  const pad = E.side === 'out' ? Math.ceil(r) + 1 : 1; // 外側の縁取りはキャンバスの外まで出る
+  const W = M.cw + 2 * pad, H = M.ch + 2 * pad;
+  const T = artAlpha();
+
+  const strong = new Uint8Array(W * H), faint = new Uint8Array(W * H);
+  let faintCount = 0;
+  for (let y = 0; y < M.ch; y++) {
+    const o = (y + pad) * W + pad, s = y * M.cw;
+    for (let x = 0; x < M.cw; x++) {
+      const a = M.maxA[s + x];
+      if (a >= T) strong[o + x] = 1;
+      else if (a > 0) { faint[o + x] = 1; faintCount++; }
+    }
+  }
+
+  const A = hexRgb(E.color), B = hexRgb(E.faintColor);
+  const under = E.side === 'out' ? new ImageData(W, H) : null;
+  const over = new ImageData(W, H);
+  const put = (img, i, c) => {
+    const p = i * 4;
+    img.data[p] = c[0]; img.data[p + 1] = c[1]; img.data[p + 2] = c[2]; img.data[p + 3] = 255;
+  };
+
+  if (E.side === 'out') {
+    const dS = distanceField(strong, W, H);
+    const dF = faintCount ? distanceField(faint, W, H) : null;
+    // 絵そのものの下：暗くするときは暗い色を敷き、半透明の部分から縁取りの色が透けないようにする。
+    // 暗くしないとき（白・10mm で仕上がりを見るとき）は縁取りの色を敷く。実際のパネルも半透明の所は下地が透ける
+    const base = E.dim ? EDGE_DARK : A;
+    for (let i = 0; i < W * H; i++) {
+      if (strong[i]) put(under, i, base);
+      else if (dS[i] <= r) put(under, i, A);
+      else if (dF && dF[i] <= r) put(under, i, B);
+    }
+  } else {
+    const clear = new Uint8Array(W * H).fill(1);   // キャンバスの外も透明として扱う
+    for (let y = 0; y < M.ch; y++) {
+      const o = (y + pad) * W + pad, s = y * M.cw;
+      for (let x = 0; x < M.cw; x++) if (M.minA[s + x] >= T) clear[o + x] = 0;
+    }
+    const dC = distanceField(clear, W, H);
+    for (let i = 0; i < W * H; i++) if (strong[i] && dC[i] <= r) put(over, i, A);
+  }
+  for (let i = 0; i < W * H; i++) if (faint[i]) put(over, i, B);
+
+  edgeJob.look = { key, pad, W, H, S: M.S, under: under && toCanvas(under), over: toCanvas(over), faintCount };
+  updateEdgeLegend(); requestRender();
+}
+
+/** 重ね絵を、マス目の大きさに引き伸ばして画像の位置に描く */
+function drawEdgeLook(cv, look) {
+  const v = state.view, k = look.S * v.zoom;
+  vctx.imageSmoothingEnabled = true;
+  vctx.drawImage(cv, v.panX - look.pad * k, v.panY - look.pad * k, look.W * k, look.H * k);
+}
+
+function updateEdgeLegend() {
+  const box = $('#edgeLegend');
+  box.hidden = !state.view.edge;
+  if (box.hidden) return;
+  const E = state.edge;
+  $('#edgeTitle').textContent = `縁取り表示（${E.side === 'out' ? '外側' : '内側'} ${E.width}mm）`;
+  $('#edgeSwA').style.background = E.color;
+  $('#edgeSwB').style.background = E.faintColor;
+  $('#edgeLabelA').textContent = E.side === 'out' ? '縁取り' : '内側の縁取り（塗り残しの穴は点になって出ます）';
+  $('#edgeLabelB').textContent = `薄い部分（不透明度 ${state.artPct}% 未満）`;
+  let note = '';
+  if (edgeJob.failed) note = '計算できませんでした（「LayerDeck について」のログに詳細）';
+  else if (edgeJob.waiting) note = '読み込みが終わってから計算します…';
+  else if (edgeJob.running) note = `計算中… ${Math.round(edgeJob.progress * 100)}%`;
+  else if (edgeJob.look) note = edgeJob.look.faintCount ? '薄い部分があります' : '薄い部分はありません';
+  $('#edgeNote').textContent = note;
+}
+
+/* ---------- ホバーで「どのレイヤーの色か」を出す（縁取り表示中だけ） ---------- */
+/*   縁取りでふくらんだゴミにカーソルを乗せると、どのキャンバスを直せばいいかがわかる */
+const hover = { timer: 0, seq: 0, cache: new Map() };   // cache: 原寸のマス目の展開済み画像を少しだけ持つ
+const HOVER_CACHE_TILES = 8;                            // 1枚 4MB ほど
+
+function scheduleHover(e) {
+  clearTimeout(hover.timer);
+  if (!state.view.edge || !edgeJob.map) { hideHoverTip(); return; }
+  const r = viewCv.getBoundingClientRect();
+  const sx = e.clientX - r.left, sy = e.clientY - r.top;
+  // 止まってから調べる（動かしている間に何度も読まない）
+  hover.timer = setTimeout(() => probeAt(sx, sy).catch((err) => log('error', 'ホバー: ' + (err.message || err))), 120);
+}
+
+function hideHoverTip() {
+  clearTimeout(hover.timer);
+  hover.seq++;
+  $('#hoverTip').hidden = true;
+}
+
+function clearHoverCache() {
+  for (const b of hover.cache.values()) b.close();
+  hover.cache.clear();
+}
+
+async function probeAt(sx, sy) {
+  const seq = ++hover.seq;
+  const v = state.view, M = edgeJob.map, tip = $('#hoverTip');
+  if (!M) return;
+  const px = ((v.flipH ? vw - sx : sx) - v.panX) / v.zoom, py = (sy - v.panY) / v.zoom;
+  // 縁取りの太さの範囲を探す。細いときでも画面で 8px 分は探す
+  const R = Math.max(state.edge.width / 25.4 * state.dpi, 8 / v.zoom);
+  // 1) 下調べの記録で、近くに色があるかを先に見る。無ければ原寸は読まない
+  if (!inkNear(M, px, py, R)) { tip.hidden = true; return; }
+
+  // 2) レイヤーごとに、原寸でいちばん近い色のピクセルを探す
+  const hits = [];
+  for (const L of visibleLayers()) {
+    const ts = tilesets.get(L.name);
+    if (!ts || ts.status !== 'ready') continue;
+    const h = await nearestInk(L, ts, px, py, R);
+    if (seq !== hover.seq) return;   // その間にカーソルが動いた
+    if (h) hits.push({ L, ...h });
+  }
+  if (!hits.length) { tip.hidden = true; return; }
+  hits.sort((a, b) => a.d - b.d);
+  const near = hits.filter((h) => h.d <= hits[0].d + 2);   // 同じ所に重なっていれば全部出す
+  const T = artAlpha();
+  tip.innerHTML = near.map((h) =>
+    `<div><b>${escapeHtml(displayName(h.L.name))}</b>　不透明度 ${Math.max(1, Math.round(h.a / 2.55))}%${h.a < T ? '（薄い）' : ''}</div>`).join('');
+  tip.hidden = false;
+  // カーソルの右下に出す。はみ出すなら反対側へ
+  const W = tip.offsetWidth, H = tip.offsetHeight;
+  tip.style.left = `${sx + 16 + W > vw ? sx - 12 - W : sx + 16}px`;
+  tip.style.top = `${sy + 16 + H > vh ? sy - 12 - H : sy + 16}px`;
+}
+
+/** 下調べの記録（S×S マス）で、点 (px, py) の R 以内に色のあるマスがあるか */
+function inkNear(M, px, py, R) {
+  const S = M.S;
+  const x0 = Math.max(0, Math.floor((px - R) / S)), x1 = Math.min(M.cw - 1, Math.floor((px + R) / S));
+  const y0 = Math.max(0, Math.floor((py - R) / S)), y1 = Math.min(M.ch - 1, Math.floor((py + R) / S));
+  for (let y = y0; y <= y1; y++) {
+    const o = y * M.cw;
+    for (let x = x0; x <= x1; x++) if (M.maxA[o + x]) return true;
+  }
+  return false;
+}
+
+/** レイヤー L の、画像上の点 (px, py) にいちばん近い色のピクセル。R より遠ければ null */
+async function nearestInk(L, ts, px, py, R) {
+  const s = L.scale;
+  let u0 = (px - R - L.x) / s, u1 = (px + R - L.x) / s;
+  if (L.flipH) { const a = ts.w - u1, b = ts.w - u0; u0 = a; u1 = b; }
+  const X0 = clamp(Math.floor(u0), 0, ts.w), X1 = clamp(Math.ceil(u1), 0, ts.w);
+  const Y0 = clamp(Math.floor((py - R - L.y) / s), 0, ts.h), Y1 = clamp(Math.ceil((py + R - L.y) / s), 0, ts.h);
+  const w = X1 - X0, h = Y1 - Y0;
+  if (w <= 0 || h <= 0) return null;
+
+  const cv = new OffscreenCanvas(w, h);
+  const g = cv.getContext('2d', { willReadFrequently: true });
+  const T = ts.tile;
+  for (let r = Math.floor(Y0 / T); r <= Math.floor((Y1 - 1) / T); r++) {
+    for (let c = Math.floor(X0 / T); c <= Math.floor((X1 - 1) / T); c++) {
+      const bmp = await hoverTile(ts, c, r);
+      if (bmp) g.drawImage(bmp, c * T - X0, r * T - Y0);
+    }
+  }
+  const d = g.getImageData(0, 0, w, h).data;
+  let best = Infinity, alpha = 0;
+  for (let y = 0; y < h; y++) {
+    const dy = L.y + (Y0 + y + 0.5) * s - py;
+    for (let x = 0; x < w; x++) {
+      const a = d[(y * w + x) * 4 + 3];
+      if (!a) continue;
+      const u = X0 + x + 0.5;
+      const dx = L.x + (L.flipH ? ts.w - u : u) * s - px;
+      const dist = dx * dx + dy * dy;
+      if (dist < best) { best = dist; alpha = a; }
+    }
+  }
+  best = Math.sqrt(best);
+  return best <= R ? { d: best, a: alpha } : null;
+}
+
+/** 原寸のマス目を展開して返す。直近のいくつかだけ持っておく */
+async function hoverTile(ts, c, r) {
+  const key = `${ts.name}|${ts.ver}|${c}|${r}`;
+  const hit = hover.cache.get(key);
+  if (hit) { hover.cache.delete(key); hover.cache.set(key, hit); return hit; }   // 最近使った順に並べ直す
+  const rec = ts.blobs.get(`0|${c}|${r}`);
+  if (!rec) return null;
+  const bmp = await createImageBitmap(rec.blob);
+  const again = hover.cache.get(key);                  // 待っている間に別の問い合わせが入れていた
+  if (again) { bmp.close(); return again; }
+  hover.cache.set(key, bmp);
+  while (hover.cache.size > HOVER_CACHE_TILES) {
+    const [k, b] = hover.cache.entries().next().value;
+    b.close(); hover.cache.delete(k);
+  }
+  return bmp;
+}
+
+const hexRgb = (hex) => {
+  const n = parseInt(String(hex).replace('#', ''), 16) || 0;
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
+
+function toCanvas(img) {
+  const c = document.createElement('canvas');
+  c.width = img.width; c.height = img.height;
+  c.getContext('2d').putImageData(img, 0, 0);
+  return c;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1099,6 +1472,7 @@ function initViewEvents() {
 
   viewCv.addEventListener('wheel', (e) => {
     e.preventDefault();
+    hideHoverTip();
     const r = viewCv.getBoundingClientRect();
     zoomAt(e.clientX - r.left, e.clientY - r.top, Math.pow(0.998, e.deltaY));
   }, { passive: false });
@@ -1110,7 +1484,8 @@ function initViewEvents() {
     viewCv.classList.add('grabbing');
   });
   viewCv.addEventListener('pointermove', (e) => {
-    if (!dragging) return;
+    if (!dragging) { scheduleHover(e); return; }
+    hideHoverTip();
     const dx = e.clientX - lx, dy = e.clientY - ly;
     lx = e.clientX; ly = e.clientY;
     state.view.panX += state.view.flipH ? -dx : dx;
@@ -1124,6 +1499,7 @@ function initViewEvents() {
   };
   viewCv.addEventListener('pointerup', stop);
   viewCv.addEventListener('pointercancel', stop);
+  viewCv.addEventListener('pointerleave', hideHoverTip);
 
   window.addEventListener('keydown', (e) => {
     const modal = document.querySelector('.modal:not([hidden])');
@@ -1131,6 +1507,8 @@ function initViewEvents() {
       if (e.key === 'Escape') closeModals();
       return;                              // ダイアログ表示中はショートカットを止める
     }
+    if (e.key === 'Escape' && closePops()) return;   // 開いている小窓・メニューを先に閉じる
+    if (e.key === 'Escape' && solo.size) { clearSolo(); return; }
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -1140,6 +1518,7 @@ function initViewEvents() {
     else if (k === 'h') toggleView('flipH', '#btnFlip');
     else if (k === 'g') toggleView('gray', '#btnGray');
     else if (k === 't') toggleView('alphaCheck', '#btnAlpha');
+    else if (k === 'e') toggleView('edge', '#btnEdge');
     else if (k === 'b') { state.view.bg = (state.view.bg + 1) % BG_MODES.length; requestRender(); scheduleSave(); }
   });
   window.addEventListener('resize', () => requestRender());
@@ -1159,6 +1538,7 @@ function toggleView(key, sel) {
   syncViewButtons();
   requestRender(); scheduleSave();
   if (key === 'guide') scheduleCut();
+  if (key === 'edge') { scheduleEdge(); if (!state.view.edge) clearHoverCache(); }
 }
 
 function syncViewButtons() {
@@ -1166,9 +1546,13 @@ function syncViewButtons() {
   $('#btnFlip').classList.toggle('on', v.flipH);
   $('#btnGray').classList.toggle('on', v.gray);
   $('#btnAlpha').classList.toggle('on', v.alphaCheck);
+  $('#btnEdge').classList.toggle('on', v.edge);
   $('#btnGuide').classList.toggle('on', v.guide);
-  viewCv.classList.toggle('gray', v.gray && !v.alphaCheck);   // 透明チェックの色は灰色にしない
+  // 透明チェックと縁取りの色は灰色にしない
+  viewCv.classList.toggle('gray', v.gray && !v.alphaCheck && !v.edge);
   $('#alphaLegend').hidden = !v.alphaCheck;
+  updateEdgeLegend();
+  updateCutInfo();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1179,6 +1563,32 @@ function syncViewButtons() {
  * 1フレームに1回へまとめる。まとめないと「呼び出し回数 × 行数」で
  * DOM構築が二乗に効いてきて、枚数が多いと操作不能になる。
  */
+/* ---------- ソロ ---------- */
+function toggleSolo(name) {
+  if (solo.has(name)) solo.delete(name); else solo.add(name);
+  onShownChanged();
+}
+
+function clearSolo() {
+  if (!solo.size) return;
+  solo.clear();
+  onShownChanged();
+}
+
+function onShownChanged() {
+  renderLayers(); requestRender(); scheduleCut();
+}
+
+/** プレビューの上の「ソロ中」の札。押すと解除 */
+function updateSoloBanner() {
+  const b = $('#soloBanner');
+  const names = state.layers.filter((L) => solo.has(L.name) && !L.missing).map((L) => displayName(L.name));
+  b.hidden = !names.length;
+  if (!names.length) return;
+  const head = names.slice(0, 2).join('・') + (names.length > 2 ? ` ほか${names.length - 2}枚` : '');
+  b.textContent = `ソロ中：${head}（Esc で解除）`;
+}
+
 function renderLayers() {
   if (layersRaf) return;
   layersRaf = requestAnimationFrame(() => { layersRaf = 0; renderLayersNow(); });
@@ -1189,20 +1599,21 @@ function renderLayersNow() {
   const openState = new Map(state.layers.map((l) => [l.name, l.open]));
   box.innerHTML = '';
   // ファイルが無いレイヤーは出さない（設定だけ裏で覚えている）
-  const shown = state.layers.filter((L) => !L.missing);
-  $('#layerCount').textContent = shown.length ? `(${shown.length})` : '';
+  const listed = state.layers.filter((L) => !L.missing);
+  $('#layerCount').textContent = listed.length ? `(${listed.length})` : '';
   const tooMany = !$('#tooMany').classList.contains('hide');
   $('#empty').classList.toggle('hide', !!state.dir || tooMany);
 
   const { w: dw, h: dh } = docSize();
   const pm = dw ? paperMM(dw, dh) : null;
   // 画面上が最前面なので、配列とは逆順に並べる
-  for (let i = shown.length - 1; i >= 0; i--) {
-    const L = shown[i];
+  for (let i = listed.length - 1; i >= 0; i--) {
+    const L = listed[i];
     L.open = openState.get(L.name) || false;
-    box.appendChild(layerRow(L, i === shown.length - 1, i === 0, pm));
+    box.appendChild(layerRow(L, i === listed.length - 1, i === 0, pm));
   }
   updateSpec();
+  updateSoloBanner();
 }
 
 function layerSubtitle(L, ts, pm) {
@@ -1223,7 +1634,8 @@ function layerSubtitle(L, ts, pm) {
 function layerRow(L, isTop, isBottom, pm) {
   const ts = tilesets.get(L.name);
   const row = document.createElement('div');
-  row.className = 'row' + (L.open ? ' open' : '') + (L.visible ? '' : ' hidden-layer');
+  row.className = 'row' + (L.open ? ' open' : '') + (shown(L) ? '' : ' hidden-layer') +
+    (solo.has(L.name) ? ' soloed' : '');
   row.dataset.name = L.name;
   row.draggable = false;   // つまみを持ったときだけ true にする（下の initRowDnd）
 
@@ -1232,7 +1644,7 @@ function layerRow(L, isTop, isBottom, pm) {
   row.innerHTML = `
     <div class="row-main">
       <span class="grip" title="ドラッグで並べ替え">${ICON.grip}</span>
-      <button class="eye ${L.visible ? 'on' : ''}" title="表示/非表示（Alt+クリックでこのレイヤーだけ表示）">${L.visible ? ICON.eye : ICON.eyeOff}</button>
+      <button class="eye ${L.visible ? 'on' : ''}" title="クリック：表示／非表示&#10;Alt+クリック：ソロ（このレイヤーだけ表示。複数可、Esc で解除）">${L.visible ? ICON.eye : ICON.eyeOff}</button>
       <div class="thumb" ${thumb ? `style="background-image:url(${thumb});background-size:contain;background-repeat:no-repeat;background-position:center"` : ''}></div>
       <div class="meta">
         <div class="name" title="${escapeHtml(L.name)}">${escapeHtml(displayName(L.name))}</div>
@@ -1261,13 +1673,8 @@ function layerRow(L, isTop, isBottom, pm) {
   const upd = () => { requestRender(); scheduleSave(); scheduleCut(); };
 
   row.querySelector('.eye').addEventListener('click', (e) => {
-    if (e.altKey) {
-      // 一覧に出ていないレイヤーの表示状態は変えない（ファイルが戻ったときにそのまま出るように）
-      const others = state.layers.filter((l) => l !== L && !l.missing);
-      const solo = L.visible && others.every((l) => !l.visible);
-      L.visible = true;
-      others.forEach((l) => { l.visible = solo; });
-    } else L.visible = !L.visible;
+    if (e.altKey) { toggleSolo(L.name); return; }
+    L.visible = !L.visible;
     renderLayers(); upd();
   });
 
@@ -1369,7 +1776,7 @@ async function saveProject() {
     version: 3,
     paper: state.paper, customW: state.customW, customH: state.customH,
     dpi: state.dpi, dpiSource: state.dpiSource,
-    bleed: state.bleed, cutMargin: state.cutMargin,
+    bleed: state.bleed, cutMargin: state.cutMargin, artPct: state.artPct,
     guides: state.guides,
     exportScale: state.exportScale,
     view: { flipH: state.view.flipH, gray: state.view.gray, bg: state.view.bg, guide: state.view.guide },
@@ -1379,7 +1786,7 @@ async function saveProject() {
     })),
   };
   try {
-    await Backend.saveProject(data);
+    await Backend.saveProject(data, state.dir);
     if (saveFailed) { saveFailed = false; updateStatusLine(); }
   } catch (e) {
     // 黙って失敗すると、設定が消えたことに気づけない
@@ -1399,6 +1806,7 @@ function applyProject(p) {
   state.dpiSource = ['png', 'manual'].includes(p.dpiSource) ? p.dpiSource : 'default';
   if (Number.isFinite(p.bleed) && p.bleed >= 0) state.bleed = p.bleed;
   if (Number.isFinite(p.cutMargin) && p.cutMargin >= 0) state.cutMargin = p.cutMargin;
+  if (Number.isFinite(p.artPct) && p.artPct >= 1 && p.artPct <= 100) state.artPct = p.artPct;
   if (p.guides) Object.assign(state.guides, {
     trim: p.guides.trim !== false, center: p.guides.center !== false,
     thirds: p.guides.thirds !== false, cut: !!p.guides.cut,
@@ -1422,6 +1830,39 @@ function applyProject(p) {
   syncUiFromState();
 }
 
+/* ---------- アプリ全体の設定（作業フォルダをまたいで共通） ---------- */
+let appSaveTimer = 0;
+
+async function loadAppSettings() {
+  try {
+    const s = await Backend.loadSettings();
+    if (s && s.edge) applyEdgeSettings(s.edge);
+  } catch (e) {
+    log('error', 'アプリの設定を読めません: ' + (e.message || e));
+  }
+  syncUiFromState();
+}
+
+function applyEdgeSettings(e) {
+  const E = state.edge, isHex = (c) => /^#[0-9a-f]{6}$/i.test(c);
+  if (Number.isFinite(e.width) && e.width > 0) E.width = e.width;
+  if (e.side === 'out' || e.side === 'in') E.side = e.side;
+  if (isHex(e.color)) E.color = e.color;
+  if (isHex(e.faintColor)) E.faintColor = e.faintColor;
+  if (typeof e.dim === 'boolean') E.dim = e.dim;
+}
+
+function scheduleAppSave() {
+  clearTimeout(appSaveTimer);
+  appSaveTimer = setTimeout(async () => {
+    try {
+      await Backend.saveSettings({ version: 1, edge: state.edge });
+    } catch (e) {
+      log('error', 'アプリの設定を保存できません: ' + (e.message || e));
+    }
+  }, 600);
+}
+
 function syncUiFromState() {
   $('#selPaper').value = state.paper;
   $('#customPaper').hidden = state.paper !== 'custom';
@@ -1430,10 +1871,16 @@ function syncUiFromState() {
   $('#inDpi').value = state.dpi;
   $('#inBleed').value = state.bleed;
   $('#inCutMargin').value = state.cutMargin;
+  $('#inArtPct').value = state.artPct;
   $('#gTrim').checked = state.guides.trim;
   $('#gCenter').checked = state.guides.center;
   $('#gThirds').checked = state.guides.thirds;
   $('#gCut').checked = state.guides.cut;
+  $('#inEdgeWidth').value = state.edge.width;
+  $('#selEdgeSide').value = state.edge.side;
+  $('#inEdgeColor').value = state.edge.color;
+  $('#inEdgeFaintColor').value = state.edge.faintColor;
+  $('#chkEdgeDim').checked = state.edge.dim;
   syncViewButtons();
   updateSpec();
   updateCutInfo();
@@ -1507,7 +1954,7 @@ async function exportComposite() {
   if (busy) return false;
   const { w: dw, h: dh } = docSize();
   if (!dw) { setStatus('レイヤーがありません', 'err'); return false; }
-  const targets = state.layers.filter((L) => L.visible && !L.missing && tilesets.has(L.name));
+  const targets = state.layers.filter((L) => shown(L) && tilesets.has(L.name));
   if (!targets.length) { setStatus('表示中のレイヤーがありません', 'err'); return false; }
 
   busy = true;
@@ -1613,6 +2060,16 @@ function openExportDialog() {
   $('#btnExportGo').focus();
 }
 
+/** ▾ の小窓と ☰ のメニューを閉じる。開いているものがあれば true */
+function closePops() {
+  let any = false;
+  for (const el of document.querySelectorAll('.pop, .menu')) {
+    if (!el.hidden) { el.hidden = true; any = true; }
+  }
+  document.querySelectorAll('.caret.open').forEach((b) => b.classList.remove('open'));
+  return any;
+}
+
 function closeModals() {
   if (busy) return;                       // 書き出し中は閉じさせない
   document.querySelectorAll('.modal').forEach((m) => { m.hidden = true; });
@@ -1684,6 +2141,10 @@ function adoptDir(j) {
   allowManyLayers = false;
   saveFailed = false;
   cut.key = ''; cut.path = null; cut.stats = null;
+  solo.clear();
+  clearHoverCache();
+  edgeJob.jobId++;   // 前のフォルダの下調べは捨てる
+  edgeJob.map = null; edgeJob.look = null; edgeJob.running = false; edgeJob.waiting = false;
   $('#tooMany').classList.add('hide');
   state.layers = [];
   applyProject(j.project);
@@ -1732,6 +2193,7 @@ function initUi() {
   $('#btnFlip').addEventListener('click', () => toggleView('flipH', '#btnFlip'));
   $('#btnGray').addEventListener('click', () => toggleView('gray', '#btnGray'));
   $('#btnAlpha').addEventListener('click', () => toggleView('alphaCheck', '#btnAlpha'));
+  $('#btnEdge').addEventListener('click', () => toggleView('edge', '#btnEdge'));
   $('#btnGuide').addEventListener('click', () => toggleView('guide', '#btnGuide'));
   $('#btnBg').addEventListener('click', () => {
     state.view.bg = (state.view.bg + 1) % BG_MODES.length; requestRender(); scheduleSave();
@@ -1741,8 +2203,38 @@ function initUi() {
   $('#btnExportGo').addEventListener('click', runExport);
   $('#btnExportClose').addEventListener('click', closeModals);
   $('#btnExportReveal').addEventListener('click', () => Backend.reveal('export').catch(() => {}));
-  $('#btnAbout').addEventListener('click', openAbout);
   $('#btnAboutClose').addEventListener('click', closeModals);
+  $('#btnHelpClose').addEventListener('click', closeModals);
+
+  // ☰ メニュー（使い方・ログ・LayerDeck について）
+  const menu = $('#menu');
+  $('#btnMenu').addEventListener('click', () => {
+    const open = menu.hidden;
+    closePops();
+    menu.hidden = !open;
+  });
+  menu.addEventListener('click', (e) => {
+    const act = e.target.closest('button') && e.target.closest('button').dataset.act;
+    if (!act) return;
+    menu.hidden = true;
+    if (act === 'help') $('#helpModal').hidden = false;
+    else if (act === 'log') Backend.reveal('log').catch(() => {});
+    else if (act === 'about') openAbout();
+  });
+
+  // ▾ で開く設定の小窓（縁取り表示・ガイド）
+  const pop = (btn, box) => $(btn).addEventListener('click', () => {
+    const open = $(box).hidden;
+    closePops();
+    $(box).hidden = !open;
+    $(btn).classList.toggle('open', open);
+  });
+  pop('#btnEdgeOpts', '#edgePop');
+  pop('#btnGuideOpts', '#guidePop');
+  // 外をクリックしたら閉じる
+  document.addEventListener('pointerdown', (e) => {
+    if (!e.target.closest('.pop, .menu, #btnMenu, .caret')) closePops();
+  });
   $('#btnLicenses').addEventListener('click', showLicenses);
   $('#btnLog').addEventListener('click', () => Backend.reveal('log').catch(() => {}));
   document.querySelectorAll('.modal').forEach((m) => m.addEventListener('click', (e) => {
@@ -1753,7 +2245,9 @@ function initUi() {
     state.layers.sort((a, b) => byName(a.name, b.name));
     renderLayers(); requestRender(); scheduleSave();
   });
+  $('#soloBanner').addEventListener('click', clearSolo);
   $('#btnAllOn').addEventListener('click', () => {
+    solo.clear();
     state.layers.forEach((l) => (l.visible = true));
     renderLayers(); requestRender(); scheduleSave(); scheduleCut();
   });
@@ -1792,6 +2286,28 @@ function initUi() {
     const v = parseFloat(e.target.value);
     if (v >= 0) { state.cutMargin = v; scheduleSave(); scheduleCut(); }
   });
+  $('#inArtPct').addEventListener('input', (e) => {
+    const v = parseFloat(e.target.value);
+    if (!(v >= 1 && v <= 100)) return;
+    // カットライン予想・縁取り表示（scheduleCut が一緒に予約する）・透明チェックが一斉に変わる
+    state.artPct = v; scheduleSave(); scheduleCut(); updateEdgeLegend(); requestRender();
+  });
+
+  // 縁取り表示。設定を触ったら、表示そのものも自動で入れる
+  const edgeSet = (apply) => (e) => {
+    if (apply(e.target) === false) return;
+    if (!state.view.edge) { state.view.edge = true; syncViewButtons(); scheduleEdge(); }
+    scheduleEdgeLook(); updateEdgeLegend(); requestRender(); scheduleAppSave();
+  };
+  $('#inEdgeWidth').addEventListener('input', edgeSet((t) => {
+    const v = parseFloat(t.value);
+    if (!(v > 0 && v <= 100)) return false;
+    state.edge.width = v;
+  }));
+  $('#selEdgeSide').addEventListener('change', edgeSet((t) => { state.edge.side = t.value; }));
+  $('#inEdgeColor').addEventListener('input', edgeSet((t) => { state.edge.color = t.value; }));
+  $('#inEdgeFaintColor').addEventListener('input', edgeSet((t) => { state.edge.faintColor = t.value; }));
+  $('#chkEdgeDim').addEventListener('change', edgeSet((t) => { state.edge.dim = t.checked; }));
 
   initViewEvents();
 }
@@ -1804,7 +2320,7 @@ window.addEventListener('unhandledrejection', (e) =>
 (async function main() {
   initUi();
   initWorkers();
-  syncUiFromState();
+  await loadAppSettings();   // syncUiFromState も行う
   try { log('info', `起動 LayerDeck ${await Backend.version()}`); } catch {}
   try {
     const j = await Backend.getState();

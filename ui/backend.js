@@ -48,8 +48,20 @@
     async memStatus() {
       return (await j('/api/mem')).mem || null;
     },
-    async saveProject(obj) {
+    /** dir = 画面が開いているフォルダ。サーバーが別のフォルダに切り替わっていたら断られる */
+    async saveProject(obj, dir) {
       await j('/api/project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Layerdeck-Dir': enc(dir || '') },
+        body: JSON.stringify(obj),
+      });
+    },
+    /** アプリ全体の設定（作業フォルダをまたいで共通） */
+    async loadSettings() {
+      return (await j('/api/settings')).settings || null;
+    },
+    async saveSettings(obj) {
+      await j('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(obj),
@@ -127,6 +139,13 @@
       async memStatus() { return await invoke('mem_status'); },
 
       async saveProject(obj) { await invoke('write_project', { json: JSON.stringify(obj) }); },
+
+      /** アプリ全体の設定。%APPDATA%\com.layerdeck.desktop\settings.json */
+      async loadSettings() {
+        const s = await invoke('load_settings');
+        try { return s ? JSON.parse(s) : null; } catch { return null; }
+      },
+      async saveSettings(obj) { await invoke('save_settings', { json: JSON.stringify(obj) }); },
 
       async saveExport(name, blob) {
         const outDir = await invoke('prepare_export');   // _export を Rust 側で作ってもらう
