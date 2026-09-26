@@ -1,7 +1,7 @@
 {
   "name": "layerdeck",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "透過PNG リアルタイム重ね合わせプレビュー",
   "scripts": {
     "dev": "tauri dev",

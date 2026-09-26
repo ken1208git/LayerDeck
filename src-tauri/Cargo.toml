@@ -1,6 +1,6 @@
 [package]
 name = "layerdeck"
-version = "0.3.0"
+version = "0.3.1"
 description = "透過PNG リアルタイム重ね合わせプレビュー"
 edition = "2021"
 rust-version = "1.77"
