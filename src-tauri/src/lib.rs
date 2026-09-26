@@ -1,9 +1,10 @@
 //! LayerDeck - 透過PNG リアルタイム重ね合わせプレビュー
 //!
 //! Rust 側の役割は少ない。監視フォルダの管理、ファイル一覧、空き物理メモリの実測、
-//! プロジェクト設定の読み書き、そしてフォルダの中身が変わったことの通知だけ。
+//! プロジェクト設定の読み書き、フォルダの中身が変わったことの通知、ログの記録だけ。
 //! 画像の読み書きと合成はすべて WebView 側（ui/app.js, ui/tiler.js）が行う。
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -13,10 +14,13 @@ use tauri::{Emitter, Manager, State};
 use tauri_plugin_fs::FsExt;
 
 const PROJECT_NAME: &str = "layerdeck.project.json";
+const EXPORT_DIR: &str = "_export";
 const IMAGE_EXTS: [&str; 6] = ["png", "webp", "jpg", "jpeg", "gif", "bmp"];
 /// フォルダの中身を見に行く間隔。OS の変更通知は書き込み途中にも飛んでくるうえ
 /// ネットワークドライブで取りこぼすことがあるので、素直に見に行くほうが確実。
 const WATCH_INTERVAL: Duration = Duration::from_millis(300);
+/// ログがこれを超えたら 1 世代だけ残して新しくする
+const LOG_LIMIT: u64 = 1_000_000;
 
 #[derive(Default)]
 struct AppState {
@@ -165,6 +169,15 @@ fn snapshot(state: &AppState) -> StateInfo {
     }
 }
 
+fn current(state: &AppState) -> Result<PathBuf, String> {
+    state
+        .dir
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "フォルダ未選択".to_string())
+}
+
 // ---------------------------------------------------------------------
 // コマンド
 // ---------------------------------------------------------------------
@@ -205,9 +218,14 @@ fn apply_dir(app: &tauri::AppHandle, state: &AppState, path: PathBuf) -> Result<
     if !path.is_dir() {
         return Err(format!("フォルダが見つかりません: {}", path.display()));
     }
-    // WebView から読み書きしてよい場所として、このフォルダだけを許可する
-    app.fs_scope()
-        .allow_directory(&path, true)
+    // WebView から触れてよい場所を最小限にする:
+    //   ・作業フォルダの直下（パーツPNGを読む）
+    //   ・その中の _export（確認用の書き出しを書く）
+    // 下の階層までは許可しない。うっかり C:\ などを選んでも、ドライブ全体を開けない。
+    let scope = app.fs_scope();
+    scope.allow_directory(&path, false).map_err(|e| e.to_string())?;
+    scope
+        .allow_directory(path.join(EXPORT_DIR), false)
         .map_err(|e| e.to_string())?;
     *state.dir.lock().unwrap() = Some(path);
     Ok(())
@@ -225,22 +243,92 @@ fn set_dir(app: tauri::AppHandle, state: State<'_, AppState>, dir: String) -> Re
 
 #[tauri::command]
 fn write_project(state: State<'_, AppState>, json: String) -> Result<(), String> {
-    let dir = state
-        .dir
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "フォルダ未選択".to_string())?;
+    let dir = current(&state)?;
     // 書きかけが読まれないよう、一時ファイルに書いてから差し替える
     let tmp = dir.join(format!("{PROJECT_NAME}.tmp"));
     std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, dir.join(PROJECT_NAME)).map_err(|e| e.to_string())
 }
 
+/// 確認用の書き出し先（作業フォルダの _export）を用意して、その場所を返す。
+/// フォルダを開いただけで _export ができてしまわないよう、書き出す直前に作る。
+#[tauri::command]
+fn prepare_export(state: State<'_, AppState>) -> Result<String, String> {
+    let out = current(&state)?.join(EXPORT_DIR);
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    Ok(out.to_string_lossy().into_owned())
+}
+
+// ---------------------------------------------------------------------
+// ログ（不具合が起きたときに状況を追えるように）
+// ---------------------------------------------------------------------
+fn log_file(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let dir = app.path().app_log_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("layerdeck.log"))
+}
+
+/// 1 行追記する。日時は画面側が現地時刻で付けて渡す（Rust の標準機能には時差の情報がないため）。
+#[tauri::command]
+fn append_log(app: tauri::AppHandle, line: String) -> Result<(), String> {
+    let f = log_file(&app).ok_or("ログの置き場所を作れません")?;
+    if std::fs::metadata(&f).map(|m| m.len() > LOG_LIMIT).unwrap_or(false) {
+        let _ = std::fs::rename(&f, f.with_file_name("layerdeck.old.log"));
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&f)
+        .map_err(|e| e.to_string())?;
+    writeln!(file, "{}", line.replace(['\r', '\n'], " ")).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn log_path(app: tauri::AppHandle) -> Option<String> {
+    let f = log_file(&app)?;
+    if !f.exists() {
+        let _ = std::fs::File::create(&f);
+    }
+    Some(f.to_string_lossy().into_owned())
+}
+
+// ---------------------------------------------------------------------
+// WebView2 の「ブラウザらしさ」を消す
+// ---------------------------------------------------------------------
+/// 既定の右クリックメニュー（戻る・最新の情報に更新・印刷…）と、
+/// ブラウザのショートカット（F5 で再読み込み、Ctrl+P で印刷、Ctrl+F で検索…）を止める。
+/// どちらも WebView2 の既定では有効で、Tauri の設定からは変えられない。
+#[cfg(windows)]
+fn harden_webview(window: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+    use windows::core::Interface;
+    let _ = window.with_webview(|wv| unsafe {
+        let Ok(core) = wv.controller().CoreWebView2() else { return };
+        let Ok(settings) = core.Settings() else { return };
+        let _ = settings.SetAreDefaultContextMenusEnabled(false);
+        if let Ok(s3) = settings.cast::<ICoreWebView2Settings3>() {
+            let _ = s3.SetAreBrowserAcceleratorKeysEnabled(false);
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn harden_webview(_window: &tauri::WebviewWindow) {}
+
 // ---------------------------------------------------------------------
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 二重起動したら新しく開かず、今ある窓を前に出す（同じ設定ファイルを取り合わないように）
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
+        // ウィンドウの大きさと位置を覚える
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -251,10 +339,17 @@ pub fn run() {
             list_files,
             mem_status,
             set_dir,
-            write_project
+            write_project,
+            prepare_export,
+            append_log,
+            log_path
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+
+            if let Some(w) = app.get_webview_window("main") {
+                harden_webview(&w);
+            }
 
             // 前回開いていたフォルダがあれば、そのまま復帰する
             if let Some(saved) = last_dir_file(&handle)

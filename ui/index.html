@@ -10,17 +10,10 @@
 
 <header id="bar">
   <div class="brand">LayerDeck</div>
-
   <button id="btnPick" class="btn primary">フォルダを選ぶ</button>
   <div id="dirLabel" class="dir" title="監視中のフォルダ">未選択</div>
-  <button id="btnReveal" class="btn icon" title="エクスプローラーで開く">📂</button>
-
+  <button id="btnReveal" class="btn icon" data-icon="folder" title="エクスプローラーで開く"></button>
   <div class="sp"></div>
-
-  <div id="memHint" class="hint" title="画面に出すために展開しているマス目の量と、空きメモリから自動で決まる上限"></div>
-
-  <div class="sp"></div>
-
   <button id="btnExport" class="btn">書き出し…</button>
   <div id="status" class="status"></div>
 </header>
@@ -33,7 +26,7 @@
       <div class="empty-inner">
         <div class="empty-title">パーツPNGの入ったフォルダを選んでください</div>
         <p>そのフォルダに透過PNGを書き出すと、<b>自動で重なって</b>ここに出ます。<br>
-        ibisPaint から書き出すたびに、開いたままで勝手に更新されます。</p>
+        同じ名前で上書きすれば、開いたままで表示が差し替わります。</p>
         <button id="btnPick2" class="btn primary big">フォルダを選ぶ</button>
       </div>
     </div>
@@ -56,13 +49,23 @@
       <span id="hudMm"></span>
     </div>
 
+    <div id="alphaLegend" class="legend-box" hidden>
+      <div class="legend-title">透明チェック</div>
+      <div><i class="sw" style="background:#464a54"></i>不透明</div>
+      <div><i class="sw" style="background:#ff9628"></i>半透明（ぼかし・グローなど）</div>
+      <div><i class="sw" style="background:#ff285a"></i>ほぼ透明（見えにくいが形に含まれうる）</div>
+      <div class="legend-note">線のふちが細く橙になるのは正常です（ふちのなめらかさ）</div>
+    </div>
+
     <div id="viewbar" class="viewbar">
-      <button class="btn icon" id="btnFit" title="全体表示 (F)">⤢</button>
-      <button class="btn icon" id="btnOne" title="等倍 (1)">1:1</button>
-      <button class="btn icon toggle" id="btnFlip" title="左右反転チェック (H)">⇄</button>
-      <button class="btn icon toggle" id="btnGray" title="グレースケール＝明度チェック (G)">◐</button>
-      <button class="btn icon toggle" id="btnGuide" title="断ち切り・塗り足しガイド">⊞</button>
-      <button class="btn icon" id="btnBg" title="背景を切り替え (B)">▩</button>
+      <button class="btn icon" id="btnFit" data-icon="fit" title="全体表示 (F)"></button>
+      <button class="btn icon txt" id="btnOne" title="実寸：画面の1ピクセル＝画像の1ピクセル (1)">100%</button>
+      <span class="vsep"></span>
+      <button class="btn icon toggle" id="btnFlip" data-icon="flip" title="左右反転チェック (H)"></button>
+      <button class="btn icon toggle" id="btnGray" data-icon="gray" title="明度チェック（グレー表示） (G)"></button>
+      <button class="btn icon toggle" id="btnAlpha" data-icon="alpha" title="透明チェック：半透明やほぼ透明の部分を色分け (T)"></button>
+      <button class="btn icon toggle" id="btnGuide" data-icon="guide" title="ガイドを表示（種類は右下の「ガイド」で選択）"></button>
+      <button class="btn icon" id="btnBg" data-icon="bg" title="背景を切り替え：市松／白／灰／黒 (B)"></button>
     </div>
   </section>
 
@@ -70,43 +73,64 @@
     <div class="side-head">
       <span>レイヤー <small id="layerCount"></small></span>
       <div class="side-head-btns">
-        <button class="btn tiny" id="btnSortName" title="ファイル名の昇順に並べ替え（数字プレフィックス推奨）">名前順</button>
+        <button class="btn tiny" id="btnSortName" title="ファイル名の順に並べ直す（番号の小さいものが下）">名前順</button>
         <button class="btn tiny" id="btnAllOn" title="すべて表示">全表示</button>
       </div>
     </div>
     <div id="layers" class="layers"></div>
 
     <div class="side-foot">
-      <details>
-        <summary>用紙とガイド</summary>
-        <div class="grid2">
-          <label>解像度 dpi<input type="number" id="inDpi" value="350" min="1" max="2400" step="1"></label>
-          <label>塗り足し mm<input type="number" id="inBleed" value="3" min="0" max="30" step="0.5"></label>
+      <details open>
+        <summary>用紙・解像度</summary>
+        <div class="form">
+          <label>用紙
+            <select id="selPaper"></select>
+          </label>
+          <div class="pair" id="customPaper" hidden>
+            <label>幅<input type="number" id="inPaperW" min="1" step="1"> mm</label>
+            <label>高さ<input type="number" id="inPaperH" min="1" step="1"> mm</label>
+          </div>
+          <label>解像度
+            <span class="inline"><input type="number" id="inDpi" min="1" max="2400" step="1"> dpi</span>
+          </label>
+          <div class="hint-line"><span id="dpiSource"></span>
+            <button class="linkbtn" id="btnDpiAuto" hidden>画像の値に戻す</button></div>
+          <label>塗り足し
+            <span class="inline"><input type="number" id="inBleed" min="0" max="30" step="0.5"> mm</span>
+          </label>
+          <div class="hint-line">四角く刷るときの値。切り抜き（ダイカット）なら 0</div>
         </div>
-        <div class="note" id="paperNote"></div>
+        <div id="specResult" class="spec"></div>
       </details>
+
+      <details id="guidePanel">
+        <summary>ガイド</summary>
+        <div class="guides">
+          <label><input type="checkbox" id="gTrim"><i class="ln trim"></i>仕上がり線（塗り足しの内側）</label>
+          <label><input type="checkbox" id="gCenter"><i class="ln center"></i>中心線</label>
+          <label><input type="checkbox" id="gThirds"><i class="ln thirds"></i>三分割線</label>
+          <label><input type="checkbox" id="gCut"><i class="ln cut"></i>カットライン予想</label>
+          <div class="pair indent">
+            <label>絵の外側<input type="number" id="inCutMargin" min="0" max="50" step="1"> mm</label>
+          </div>
+        </div>
+        <div id="cutInfo" class="spec"></div>
+      </details>
+
       <details>
         <summary>使い方 / ショートカット</summary>
         <ul class="keys">
-          <li><b>ホイール</b> ズーム（カーソル基準）</li>
-          <li><b>ドラッグ / Space+ドラッグ</b> 移動</li>
-          <li><b>F</b> 全体表示 / <b>1</b> 等倍</li>
-          <li><b>H</b> 左右反転 / <b>G</b> グレースケール / <b>B</b> 背景</li>
-          <li><b>目玉をAlt+クリック</b> そのレイヤーだけ表示（ソロ）</li>
-          <li>ファイル名を <code>01_背景.png</code> のように付けると<br>「名前順」で下から積めます</li>
+          <li><b>ホイール</b> ズーム ／ <b>ドラッグ</b> 移動</li>
+          <li><b>F</b> 全体表示 ／ <b>1</b> 実寸（100%）</li>
+          <li><b>H</b> 左右反転 ／ <b>G</b> 明度チェック ／ <b>T</b> 透明チェック</li>
+          <li><b>B</b> 背景の切り替え</li>
+          <li><b>目のアイコンを Alt+クリック</b> そのレイヤーだけ表示</li>
+          <li>同じ名前で上書き保存すると、表示が差し替わります</li>
+          <li>ファイル名を <code>01_背景.png</code> のように番号から始めると、<br>番号の小さいものが下に積まれます</li>
         </ul>
       </details>
-      <details>
-        <summary>拡大しても軽い理由</summary>
-        <div class="note">
-          読み込んだPNGは 1024px のマス目に切り分けて持っています。
-          画面に映っているマス目だけを展開するので、<b>何倍に拡大しても、
-          絵が何枚あっても、使うメモリはほぼ一定</b>です。<br><br>
-          展開したマス目の量は、パソコンの空きメモリを見ながら自動で増減します。
-          ibisPaint が重くなってきたら、こちらが自動で身を引きます。
-          ディスクには何も書きません。
-        </div>
-      </details>
+
+      <button class="linkbtn about-link" id="btnAbout">LayerDeck について</button>
     </div>
   </aside>
 </main>
@@ -125,8 +149,34 @@
     </div>
     <div class="modal-foot">
       <div id="exportStatus" class="status"></div>
+      <button class="btn" id="btnExportReveal" hidden>フォルダで表示</button>
       <button class="btn" id="btnExportClose">キャンセル</button>
       <button class="btn primary" id="btnExportGo">書き出す</button>
+    </div>
+  </div>
+</div>
+
+<div id="aboutModal" class="modal" hidden>
+  <div class="modal-box wide" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
+    <div class="modal-head" id="aboutTitle">LayerDeck について</div>
+    <div class="modal-body">
+      <div class="about-name">LayerDeck <span id="aboutVersion"></span></div>
+      <p class="note">パーツごとに書き出した透過PNGを、自動で重ねて原寸まで確認するためのプレビューアプリです。</p>
+      <ul class="about-notes">
+        <li>合成モード（乗算・スクリーンなど）の計算は、ペイントソフトと細部が異なる場合があります。</li>
+        <li>カットライン予想は目安です。実際の線は印刷所が作成します。</li>
+        <li>書き出しは確認用です。納品には使わないでください。</li>
+      </ul>
+      <div class="about-mem" id="aboutMem"></div>
+      <div class="about-actions">
+        <button class="btn" id="btnLog">ログを表示</button>
+        <button class="btn" id="btnLicenses">オープンソースのライセンス</button>
+      </div>
+      <pre id="licenseText" class="license" hidden></pre>
+    </div>
+    <div class="modal-foot">
+      <div class="status"></div>
+      <button class="btn primary" id="btnAboutClose">閉じる</button>
     </div>
   </div>
 </div>

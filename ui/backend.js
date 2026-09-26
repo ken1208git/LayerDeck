@@ -65,9 +65,14 @@
       if (!o.ok) throw new Error(o.error || '保存に失敗しました');
       return o.path;
     },
-    async reveal() {
-      await fetch('/api/reveal', { method: 'POST', body: '{}' }).catch(() => {});
+    /** kind: 'folder' | 'export' | 'log' */
+    async reveal(kind) {
+      const sub = kind === 'export' ? '_export' : '';
+      await fetch('/api/reveal', { method: 'POST', body: JSON.stringify({ sub }) }).catch(() => {});
     },
+    log(line) { console.info(line); },
+    async version() { return '開発版'; },
+    async setTitle(title) { document.title = title; },
     onChange() { /* 使わない */ },
   };
 
@@ -81,16 +86,20 @@
 
     let sep = '\\';
     let curDir = null;
+    let curFiles = [];
+    let lastExport = null;
     const join = (...p) => p.join(sep);
 
     const adopt = (s) => {
       if (s && s.sep) sep = s.sep;
       if (s && 'dir' in s) curDir = s.dir;
+      if (s && Array.isArray(s.files)) curFiles = s.files;
       return s;
     };
-    // キャッシュが無ければ Rust に聞き直す。画面側の呼び順に依存しないようにするため。
+    // 現在のフォルダは毎回 Rust に聞く。こちらで覚えておくと、覚えた値が古くなったときに
+    // 別のフォルダから読んでしまう（実際に起きた）。読み書きは頻繁ではないので問い合わせで十分。
     const needDir = async () => {
-      if (!curDir) curDir = await invoke('current_dir');
+      curDir = await invoke('current_dir');
       if (!curDir) throw new Error('フォルダ未選択');
       return curDir;
     };
@@ -101,7 +110,7 @@
       pushesChanges: true,
 
       async getState() { return adopt(await invoke('get_state')); },
-      async listFiles() { return await invoke('list_files'); },
+      async listFiles() { curFiles = await invoke('list_files'); return curFiles; },
 
       async pickFolder() {
         const picked = await dialog.open({ directory: true, multiple: false, title: 'パーツPNGの入ったフォルダを選択' });
@@ -120,16 +129,32 @@
       async saveProject(obj) { await invoke('write_project', { json: JSON.stringify(obj) }); },
 
       async saveExport(name, blob) {
-        const outDir = join(await needDir(), '_export');
-        try { await fs.mkdir(outDir, { recursive: true }); } catch { /* 既にあるだけ */ }
+        const outDir = await invoke('prepare_export');   // _export を Rust 側で作ってもらう
         const path = join(outDir, name);
         await fs.writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+        lastExport = path;
         return path;
       },
 
-      async reveal() {
-        const dir = await needDir().catch(() => null);
-        if (dir && opener) await opener.openPath(dir);
+      /**
+       * エクスプローラーで表示する。フォルダそのものではなく中のファイルを選んだ状態で開く
+       * （Tauri の既定の権限で許されているのが「ファイルをフォルダ内で表示」なので）。
+       */
+      async reveal(kind) {
+        let target = null;
+        if (kind === 'export') target = lastExport;
+        else if (kind === 'log') target = await invoke('log_path');
+        else {
+          const dir = await needDir();
+          target = curFiles.length ? join(dir, curFiles[0].name) : dir;
+        }
+        if (target && opener) await opener.revealItemInDir(target);
+      },
+
+      log(line) { invoke('append_log', { line }).catch(() => {}); },
+      async version() { return await T.app.getVersion(); },
+      async setTitle(title) {
+        try { await T.window.getCurrentWindow().setTitle(title); } catch { /* 無くても困らない */ }
       },
 
       onChange(cb) { event.listen('files-changed', () => cb()); },

@@ -1,11 +1,12 @@
 {
   "name": "layerdeck",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "透過PNG リアルタイム重ね合わせプレビュー",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build",
+    "licenses": "node scripts/gen-licenses.mjs",
+    "build": "node scripts/gen-licenses.mjs && tauri build",
     "tauri": "tauri"
   },
   "devDependencies": {

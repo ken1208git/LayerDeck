@@ -40,6 +40,7 @@ STATIC = {
     "/backend.js": ("backend.js", "text/javascript; charset=utf-8"),
     "/tiler.js": ("tiler.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/licenses.txt": ("licenses.txt", "text/plain; charset=utf-8"),
 }
 
 _lock = threading.Lock()
