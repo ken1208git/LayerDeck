@@ -1832,11 +1832,14 @@ function applyProject(p) {
 
 /* ---------- アプリ全体の設定（作業フォルダをまたいで共通） ---------- */
 let appSaveTimer = 0;
+/** 右の列の幅と、「用紙・解像度」欄の高さ（px）。null は初期の大きさ */
+const layout = { sideW: null, footH: null };
 
 async function loadAppSettings() {
   try {
     const s = await Backend.loadSettings();
     if (s && s.edge) applyEdgeSettings(s.edge);
+    if (s && s.layout) { setSideWidth(s.layout.sideW); setFootHeight(s.layout.footH); }
   } catch (e) {
     log('error', 'アプリの設定を読めません: ' + (e.message || e));
   }
@@ -1856,11 +1859,58 @@ function scheduleAppSave() {
   clearTimeout(appSaveTimer);
   appSaveTimer = setTimeout(async () => {
     try {
-      await Backend.saveSettings({ version: 1, edge: state.edge });
+      await Backend.saveSettings({ version: 1, edge: state.edge, layout });
     } catch (e) {
       log('error', 'アプリの設定を保存できません: ' + (e.message || e));
     }
   }, 600);
+}
+
+/* ---------- 境目のドラッグで、右の列の幅と「用紙・解像度」欄の高さを変える ---------- */
+function setSideWidth(w) {
+  const max = Math.max(260, Math.round(window.innerWidth * 0.6));
+  layout.sideW = Number.isFinite(w) && w > 0 ? clamp(Math.round(w), 260, max) : null;
+  if (layout.sideW) document.documentElement.style.setProperty('--side-w', layout.sideW + 'px');
+  else document.documentElement.style.removeProperty('--side-w');
+  requestRender();
+}
+
+function setFootHeight(h) {
+  const foot = document.querySelector('.side-foot');
+  const max = Math.max(60, Math.round($('#side').getBoundingClientRect().height - 140));   // レイヤー一覧を最低限残す
+  layout.footH = Number.isFinite(h) && h > 0 ? clamp(Math.round(h), 60, max) : null;
+  foot.style.height = layout.footH ? layout.footH + 'px' : '';
+  foot.style.maxHeight = layout.footH ? 'none' : '';
+}
+
+function initResizers() {
+  const drag = (el, onMove, onReset) => {
+    el.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      try { el.setPointerCapture(e.pointerId); } catch { /* 取れなくてもドラッグはできる */ }
+      el.classList.add('dragging');
+      const up = () => {
+        el.classList.remove('dragging');
+        el.removeEventListener('pointermove', onMove);
+        el.removeEventListener('pointerup', up);
+        el.removeEventListener('pointercancel', up);
+        scheduleAppSave();
+      };
+      el.addEventListener('pointermove', onMove);
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+    });
+    el.addEventListener('dblclick', () => { onReset(); scheduleAppSave(); });
+  };
+  // 右の列は画面の右端まで続くので、幅＝右端からカーソルまで
+  drag($('#sideResizer'), (e) => setSideWidth(window.innerWidth - e.clientX), () => setSideWidth(null));
+  drag($('#footResizer'), (e) => setFootHeight($('#side').getBoundingClientRect().bottom - e.clientY), () => setFootHeight(null));
+  // ウィンドウを小さくしたときに、覚えていた大きさが収まらなくなるのを直す
+  window.addEventListener('resize', () => {
+    if (layout.sideW) setSideWidth(layout.sideW);
+    if (layout.footH) setFootHeight(layout.footH);
+  });
 }
 
 function syncUiFromState() {
@@ -2310,6 +2360,7 @@ function initUi() {
   $('#chkEdgeDim').addEventListener('change', edgeSet((t) => { state.edge.dim = t.checked; }));
 
   initViewEvents();
+  initResizers();
 }
 
 window.addEventListener('error', (e) =>

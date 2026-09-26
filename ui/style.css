@@ -160,8 +160,14 @@ main{display:flex; height:calc(100% - var(--bar-h))}
 }
 .side-head small{color:var(--fg2); font-weight:400; margin-left:4px}
 .side-head-btns{display:flex; gap:5px}
-.layers{flex:1 1 auto; overflow-y:auto; overflow-x:hidden; padding:6px}
-.side-foot{border-top:1px solid var(--line); padding:6px 10px 10px; max-height:55%; overflow-y:auto}
+.layers{flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; padding:6px}
+/* 高さを変えられるように、縮むのはレイヤー一覧だけにする */
+.side-foot{flex:0 0 auto; border-top:1px solid var(--line); padding:6px 10px 10px; max-height:55%; overflow-y:auto}
+/* 境目のつまみ。両隣に少しはみ出させて、細い線の上でも掴みやすくする */
+.resizer{position:relative; z-index:4; background:transparent; transition:background .12s}
+.resizer-v{flex:0 0 7px; margin:0 -3px; cursor:col-resize}
+.resizer-h{flex:0 0 7px; margin:-3px 0; cursor:row-resize}
+.resizer:hover, .resizer.dragging{background:rgba(91,157,255,.45)}
 .side-foot details{margin-top:4px}
 .side-foot summary{cursor:pointer; color:var(--fg2); padding:4px 0; font-size:12px}
 .side-foot summary:hover{color:var(--fg)}
