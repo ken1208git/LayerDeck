@@ -2723,6 +2723,7 @@ function syncUiFromState() {
   $('#inBleed').value = state.bleed;
   $('#inCutMargin').value = state.cutMargin;
   $('#inArtPct').value = state.artPct;
+  updateGuideVals();
   $('#gTrim').checked = state.guides.trim;
   $('#gCenter').checked = state.guides.center;
   $('#gThirds').checked = state.guides.thirds;
@@ -2914,6 +2915,11 @@ function openExportDialog() {
   $('#btnExportClose').textContent = 'キャンセル';
   $('#exportModal').hidden = false;
   $('#btnExportGo').focus();
+}
+
+/** ガイドの小窓に出す、今のカットラインの余白と絵とみなす不透明度 */
+function updateGuideVals() {
+  $('#guideCutVals').textContent = `余白 ${state.cutMargin}mm・不透明度 ${state.artPct}%`;
 }
 
 /** ▾ の小窓と ？ のメニューを閉じる。開いているものがあれば true */
@@ -3122,6 +3128,17 @@ function initUi() {
   });
   pop('#btnEdgeOpts', '#edgePop');
   pop('#btnGuideOpts', '#guidePop');
+  // カットラインの余白と不透明度は印刷の条件なので、置き場所は右の「用紙・解像度」の1か所だけ。
+  // ガイドの小窓からは、今の値を見せて、そこへ連れて行く
+  $('#btnGoCutSettings').addEventListener('click', () => {
+    closePops();
+    const panel = $('#specPanel');
+    panel.open = true;
+    const input = $('#inCutMargin');
+    input.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    input.focus();
+    input.select();
+  });
   // 外をクリックしたら閉じる
   document.addEventListener('pointerdown', (e) => {
     if (!e.target.closest('.pop, .menu, #btnHelp, .caret')) closePops();
@@ -3175,13 +3192,13 @@ function initUi() {
   guide('#gTrim', 'trim'); guide('#gCenter', 'center'); guide('#gThirds', 'thirds'); guide('#gCut', 'cut');
   $('#inCutMargin').addEventListener('input', (e) => {
     const v = parseFloat(e.target.value);
-    if (v >= 0) { state.cutMargin = v; scheduleSave(); scheduleCut(); }
+    if (v >= 0) { state.cutMargin = v; scheduleSave(); scheduleCut(); updateGuideVals(); }
   });
   $('#inArtPct').addEventListener('input', (e) => {
     const v = parseFloat(e.target.value);
     if (!(v >= 1 && v <= 100)) return;
     // カットライン予想・縁取り表示（scheduleCut が一緒に予約する）・透明チェックが一斉に変わる
-    state.artPct = v; scheduleSave(); scheduleCut(); updateEdgeLegend(); requestRender();
+    state.artPct = v; scheduleSave(); scheduleCut(); updateEdgeLegend(); updateGuideVals(); requestRender();
   });
 
   // 縁取り表示。設定を触ったら、表示そのものも自動で入れる

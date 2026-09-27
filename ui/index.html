@@ -142,7 +142,8 @@
         <label><input type="checkbox" id="gCenter"><i class="ln center"></i>中心線</label>
         <label><input type="checkbox" id="gThirds"><i class="ln thirds"></i>三分割線</label>
         <label><input type="checkbox" id="gCut"><i class="ln cut"></i>カットライン予想</label>
-        <div class="hint-line">余白と、絵とみなす不透明度は、右の「用紙・解像度」で変えられます</div>
+        <div class="hint-line">今の値：<span id="guideCutVals"></span>
+          <button class="linkbtn" id="btnGoCutSettings" title="右の「用紙・解像度」の「切り抜き」を開く">変える</button></div>
       </div>
     </div>
   </section>
@@ -184,7 +185,7 @@
     <div id="footResizer" class="resizer resizer-h" title="ドラッグで高さを変える（ダブルクリックで元に戻す）"></div>
 
     <div class="side-foot">
-      <details open>
+      <details open id="specPanel">
         <summary>用紙・解像度</summary>
         <div class="form">
           <label>用紙
