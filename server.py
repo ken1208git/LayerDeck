@@ -190,10 +190,19 @@ def pick_file(initial):
         "r.destroy()\n"
         "sys.stdout.write(p or '')\n"
     )
+    return run_dialog(code, initial)
+
+
+def run_dialog(code, initial):
+    """ダイアログを出す子プロセスを動かし、選ばれた場所を受け取る。
+    子プロセスの出力は、何もしないと Windows の日本語の文字コード（Shift_JIS）になり、
+    日本語を含む場所（_ラフ\\ラフ.png など）を UTF-8 として読めずに「選ばれなかった」扱いになる
+    （実際に起きた）。子プロセスにも UTF-8 で書かせる。"""
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     try:
         r = subprocess.run(
             [sys.executable, "-c", code, initial or ""],
-            capture_output=True, text=True, encoding="utf-8", timeout=600,
+            capture_output=True, text=True, encoding="utf-8", timeout=600, env=env,
         )
         return (r.stdout or "").strip() or None
     except Exception:
@@ -211,14 +220,7 @@ def pick_folder(initial):
         "r.destroy()\n"
         "sys.stdout.write(p or '')\n"
     )
-    try:
-        r = subprocess.run(
-            [sys.executable, "-c", code, initial or ""],
-            capture_output=True, text=True, encoding="utf-8", timeout=600,
-        )
-        return (r.stdout or "").strip() or None
-    except Exception:
-        return None
+    return run_dialog(code, initial)
 
 
 # ---------------------------------------------------------------------
