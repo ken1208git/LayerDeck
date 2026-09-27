@@ -126,6 +126,7 @@ main{display:flex; height:calc(100% - var(--bar-h))}
 .seek-label{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0}
 .seek-label b{color:var(--fg)}
 .seek-check{display:flex; align-items:center; gap:5px; white-space:nowrap; font-size:11px}
+.seek-color{width:26px; height:20px; padding:1px; flex:0 0 auto}
 .seek-body{position:relative}
 .seek-track{display:block; width:100%; height:40px; cursor:pointer}
 .seek-tip{

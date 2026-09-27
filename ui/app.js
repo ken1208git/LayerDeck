@@ -698,7 +698,7 @@ function render() {
   if (look && look.under) drawEdgeLook(look.under, look);
   vctx.drawImage(stageCv, 0, 0, stageCv.width, stageCv.height, 0, 0, vw, vh);
   if (look) drawEdgeLook(look.over, look);
-  // 過去の時点を見ているときは、今との違いを紫で重ねる
+  // 過去の時点を見ているときは、今との違いを設定の色（初期は紫）で重ねる
   if (past && hist.diff && hist.diff.view === hist.view && hist.diff.any && $('#chkSeekDiff').checked) {
     drawEdgeLook(hist.diff.cv, hist.diff);
   }
@@ -1457,7 +1457,7 @@ async function hoverTile(ts, c, r) {
 const HIST_LONG = { light: 1500, std: 3000, full: 0 };   // 残す画質（長い辺 px。0 は原寸）
 const HIST_THUMB = 800;                                   // シークバーを動かしている間に使う縮小版
 const hist = {
-  settings: { quality: 'std', capMB: 2048, keepDays: 60 },
+  settings: { quality: 'std', capMB: 2048, keepDays: 60, diffColor: '#cd50ff' },   // diffColor：今との違いを囲む色
   id: null,             // 作業フォルダのID（layerdeck.project.json に書く）
   index: null,          // { version, id, dir, lastOpened, next, events: [...] }
   writing: Promise.resolve(),   // 書き込みを順番に行う
@@ -1778,6 +1778,13 @@ function initSeekbar() {
   $('#btnSeekNow').addEventListener('click', () => setHistView(null));
   $('#btnSeekClose').addEventListener('click', () => openSeekbar(false));
   $('#chkSeekDiff').addEventListener('change', () => { histScheduleDiff(); requestRender(); });
+  // 違いを囲む色。絵に同じような色が多いと見分けにくいので変えられるようにする
+  $('#inDiffColor').addEventListener('input', (e) => {
+    hist.settings.diffColor = e.target.value;
+    $('#seekNote').style.color = e.target.value;
+    if (hist.diff) { paintDiffLook(hist.diff); requestRender(); }
+    scheduleAppSave();
+  });
   const cv = $('#seekTrack'), tip = $('#seekTip');
   const idxAt = (clientX) => {
     const n = hist.index ? hist.index.events.length : 0;
@@ -1931,7 +1938,11 @@ async function histComputeDiff() {
   requestRender();
 }
 
-/** 違うマスを 1.5mm ふくらませて、紫でうっすら塗る（小さな違いも見えるように） */
+/**
+ * 違うマスを 1.5mm ふくらませて、設定の色でうっすら塗る（小さな違いも見えるように）。
+ * どこを塗るか（region：0=塗らない 1=ふくらませた所 2=違う所そのもの）を覚えておき、
+ * 色を変えたときは計算をやり直さずに塗り直す
+ */
 function buildDiffLook(res, view) {
   const { S, cw, ch, mask } = res;
   const r = 1.5 / 25.4 * state.dpi / S;
@@ -1941,17 +1952,26 @@ function buildDiffLook(res, view) {
   for (let y = 0; y < ch; y++) {
     for (let x = 0; x < cw; x++) if (mask[y * cw + x]) { m[(y + pad) * W + x + pad] = 1; any = true; }
   }
-  const img = new ImageData(W, H);
+  const region = new Uint8Array(W * H);
   if (any) {
     const d = distanceField(m, W, H);
-    for (let i = 0; i < W * H; i++) {
-      if (d[i] > r) continue;
-      const p = i * 4;
-      img.data[p] = 205; img.data[p + 1] = 80; img.data[p + 2] = 255;
-      img.data[p + 3] = m[i] ? 115 : 60;
-    }
+    for (let i = 0; i < W * H; i++) if (d[i] <= r) region[i] = m[i] ? 2 : 1;
   }
-  return { view, pad, W, H, S, cv: toCanvas(img), any };
+  const look = { view, pad, W, H, S, region, any, cv: null };
+  paintDiffLook(look);
+  return look;
+}
+
+function paintDiffLook(look) {
+  const [cr, cg, cb] = hexRgb(hist.settings.diffColor);
+  const img = new ImageData(look.W, look.H), R = look.region;
+  for (let i = 0; i < R.length; i++) {
+    if (!R[i]) continue;
+    const p = i * 4;
+    img.data[p] = cr; img.data[p + 1] = cg; img.data[p + 2] = cb;
+    img.data[p + 3] = R[i] === 2 ? 115 : 60;
+  }
+  look.cv = toCanvas(img);
 }
 
 const hexRgb = (hex) => {
@@ -2564,6 +2584,7 @@ async function loadAppSettings() {
       if (h.quality in HIST_LONG) H.quality = h.quality;
       if (Number.isFinite(h.capMB) && h.capMB >= 100) H.capMB = h.capMB;
       if (Number.isFinite(h.keepDays) && h.keepDays >= 0) H.keepDays = h.keepDays;
+      if (/^#[0-9a-f]{6}$/i.test(h.diffColor)) H.diffColor = h.diffColor;
     }
   } catch (e) {
     log('error', 'アプリの設定を読めません: ' + (e.message || e));
@@ -2672,6 +2693,8 @@ function syncUiFromState() {
   $('#selHistQuality').value = hist.settings.quality;
   $('#selHistCap').value = String(hist.settings.capMB);
   $('#selHistDays').value = String(hist.settings.keepDays);
+  $('#inDiffColor').value = hist.settings.diffColor;
+  $('#seekNote').style.color = hist.settings.diffColor;
   syncViewButtons();
   updateSpec();
   updateCutInfo();
