@@ -6,7 +6,7 @@
 A2 のような大きなキャンバスで、ペイントソフト側のレイヤー数を増やさずに全体像を確認するためのもの。
 印刷の規格に合っているか、切り抜き（ダイカット）でどんな形になるかも確かめられる。
 
-**ダウンロード**：[最新版のリリース](https://github.com/ken1208git/layerdeck/releases/latest) から
+**ダウンロード**：[最新版のリリース](https://github.com/ken1208git/LayerDeck/releases/latest) から
 `LayerDeck_<版>_x64-setup.exe` を落として実行する（Windows 10 / 11）。
 
 ## 何ができるか
