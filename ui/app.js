@@ -149,6 +149,7 @@ const edgeJob = {
 const newLayer = (name) => ({
   name, visible: true, opacity: 1, blend: 'source-over',
   x: 0, y: 0, scale: 1, flipH: false, open: false, missing: false, goneAt: 0,
+  color: null,   // シークバーの目盛りの色。null は名前から自動で決める
 });
 
 const newTileset = (name, ver) => ({
@@ -1665,15 +1666,41 @@ async function histClear() {
 }
 
 /* ---------- シークバーの表示と操作 ---------- */
-const layerHues = new Map();
-/** レイヤーごとの目盛りの色（名前から決める。毎回同じ色になる） */
+/**
+ * レイヤーの色（シークバーの目盛りと、開いている間に行の左端に出す帯）。
+ * 変えていなければ、今あるレイヤーを名前順に並べて色相を均等に振り分ける（3枚なら 120° ずつ離れる）。
+ * 名前から計算する方式だと、偶然似た色が並ぶことがあった
+ */
 function layerColor(name) {
-  if (!layerHues.has(name)) {
+  const L = state.layers.find((l) => l.name === name);
+  if (L && L.color) return L.color;
+  const names = state.layers.map((l) => l.name).sort(byName);
+  let i = names.indexOf(name), n = names.length;
+  if (i < 0) {   // 一覧に無い名前（念のため）。名前から決める
     let h = 0;
     for (const c of name) h = (h * 31 + c.codePointAt(0)) >>> 0;
-    layerHues.set(name, h % 360);
+    i = h % 360; n = 360;
   }
-  return `hsl(${layerHues.get(name)} 72% 64%)`;
+  return hslHex((210 + (i / n) * 360) % 360, 0.72, 0.64);
+}
+
+function hslHex(h, s, l) {
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const c = l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(c * 255).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+/** 共通のカラーピッカーを、anchor の位置で開く */
+function pickColor(anchor, value, onInput, onDone) {
+  const inp = $('#colorPicker'), r = anchor.getBoundingClientRect();
+  inp.style.left = `${r.left}px`; inp.style.top = `${r.bottom}px`;
+  inp.value = value;
+  inp.oninput = () => onInput(inp.value);
+  inp.onchange = () => { if (onDone) onDone(inp.value); };
+  inp.click();
 }
 
 const fmtTime = (t) => {
@@ -1685,6 +1712,8 @@ const histDescribe = (e) => `${fmtTime(e.t)}　${displayName(e.name)} を${e.gon
 function openSeekbar(open) {
   hist.open = open;
   $('#seekbar').hidden = !open;
+  // レイヤーの色は目盛りとの対応にしか使わないので、開いている間だけ行に色の帯を出す
+  document.body.classList.toggle('seek-open', open);
   $('#btnHist').classList.toggle('on', open);
   if (!open) { hist.view = null; histRelease(); }
   updateSeekbar();
@@ -2205,6 +2234,7 @@ function layerRow(L, isTop, isBottom, pm) {
   const sub = layerSubtitle(L, ts, pm);
   row.innerHTML = `
     <div class="row-main">
+      <span class="stripe" style="background:${layerColor(L.name)}" title="このレイヤーの色（シークバーの目盛りの色）&#10;クリック：色を変える　Alt+クリック：自動の色に戻す"></span>
       <span class="grip" title="ドラッグで並べ替え">${ICON.grip}</span>
       <button class="eye ${L.visible ? 'on' : ''}" title="クリック：表示／非表示&#10;Alt+クリック：ソロ（このレイヤーだけ表示。複数可、Esc で解除）">${L.visible ? ICON.eye : ICON.eyeOff}</button>
       <div class="thumb" ${thumb ? `style="background-image:url(${thumb});background-size:contain;background-repeat:no-repeat;background-position:center"` : ''}></div>
@@ -2251,6 +2281,17 @@ function layerRow(L, isTop, isBottom, pm) {
   };
   row.querySelector('.up').addEventListener('click', () => move(1));   // 画面上＝配列の後ろ
   row.querySelector('.dn').addEventListener('click', () => move(-1));
+
+  // 色の帯（シークバーを開いている間だけ出る）
+  const stripe = row.querySelector('.stripe');
+  stripe.addEventListener('click', (e) => {
+    if (e.altKey) { L.color = null; renderLayers(); drawSeekTrack(); scheduleSave(); return; }
+    pickColor(stripe, layerColor(L.name), (c) => {
+      L.color = c;
+      stripe.style.background = c;
+      drawSeekTrack();
+    }, () => { renderLayers(); scheduleSave(); });
+  });
 
   row.querySelector('.gear').addEventListener('click', () => {
     L.open = !L.open; row.classList.toggle('open', L.open);
@@ -2346,7 +2387,7 @@ async function saveProject() {
     view: { flipH: state.view.flipH, gray: state.view.gray, bg: state.view.bg, guide: state.view.guide },
     layers: state.layers.map((L) => ({
       name: L.name, visible: L.visible, opacity: L.opacity, blend: L.blend,
-      x: L.x, y: L.y, scale: L.scale, flipH: L.flipH,
+      x: L.x, y: L.y, scale: L.scale, flipH: L.flipH, color: L.color || undefined,
     })),
   };
   try {
@@ -2398,6 +2439,7 @@ function applyProject(p) {
       x: s.x || 0, y: s.y || 0,
       scale: Number.isFinite(s.scale) && s.scale > 0 ? s.scale : 1,
       flipH: !!s.flipH,
+      color: /^#[0-9a-f]{6}$/i.test(s.color) ? s.color : null,
       missing: true,  // ポーリングで実在が確認できたら false になる
     }));
   }
